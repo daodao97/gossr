@@ -4,8 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"gossr/renderer"
-
+	"github.com/daodao97/gossr/renderer"
 	"github.com/dop251/goja"
 )
 

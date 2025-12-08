@@ -8,8 +8,7 @@ import (
 	"html/template"
 	"strconv"
 
-	"gossr/renderer"
-
+	"github.com/daodao97/gossr/renderer"
 	"rogchap.com/v8go"
 )
 

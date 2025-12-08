@@ -7,8 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"gossr/renderer"
-
+	"github.com/daodao97/gossr/renderer"
 	rendegojs "github.com/daodao97/gossr/renderer/engine/gojs"
 	renderv8 "github.com/daodao97/gossr/renderer/engine/v8"
 )

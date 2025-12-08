@@ -5,8 +5,8 @@ package gossr
 import (
 	"log"
 
-	"gossr/renderer"
-	rendegojs "gossr/renderer/engine/gojs"
+	"github.com/daodao97/gossr/renderer"
+	rendegojs "github.com/daodao97/gossrc/render/engine/gojs"
 )
 
 func newRendererFromEnv(scriptContents string) renderer.Renderer {
