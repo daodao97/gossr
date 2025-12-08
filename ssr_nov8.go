@@ -6,7 +6,7 @@ import (
 	"log"
 
 	"github.com/daodao97/gossr/renderer"
-	rendegojs "github.com/daodao97/gossrc/render/engine/gojs"
+	rendegojs "github.com/daodao97/gossr/renderer/engine/gojs"
 )
 
 func newRendererFromEnv(scriptContents string) renderer.Renderer {
