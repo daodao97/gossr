@@ -1,0 +1,20 @@
+{
+  "name": "gossr-example-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 3333",
+    "build": "npm run build:client && npm run build:server",
+    "build:client": "vite build --ssrManifest --outDir ./dist/client --emptyOutDir",
+    "build:server": "vite build -c vite.config.server.ts --outDir ./dist/server --emptyOutDir"
+  },
+  "dependencies": {
+    "@vue/server-renderer": "^3.5.28",
+    "vue": "^3.5.28"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.4",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1"
+  }
+}

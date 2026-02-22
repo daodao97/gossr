@@ -362,29 +362,52 @@ func renderWithTimeout(ssr renderer.Renderer, urlPath string, payload map[string
 		err    error
 	}
 
-	ch := make(chan renderResult, 1)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				ch <- renderResult{err: fmt.Errorf("panic: %v", r)}
-			}
-		}()
-		if sem != nil {
-			sem <- struct{}{}
-			defer func() { <-sem }()
-		}
-		res, err := ssr.Render(urlPath, payload)
-		ch <- renderResult{result: res, err: err}
-	}()
-
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
 
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	ch := make(chan renderResult, 1)
+	done := make(chan struct{})
+	defer close(done)
+
+	sendResult := func(r renderResult) {
+		select {
+		case ch <- r:
+		case <-done:
+		}
+	}
+
+	acquired := false
+	if sem != nil {
+		select {
+		case sem <- struct{}{}:
+			acquired = true
+		case <-timer.C:
+			return renderer.Result{}, fmt.Errorf("render timeout after %s", timeout)
+		}
+	}
+
+	go func(releaseSem bool) {
+		if releaseSem {
+			defer func() { <-sem }()
+		}
+		defer func() {
+			if r := recover(); r != nil {
+				sendResult(renderResult{err: fmt.Errorf("panic: %v", r)})
+			}
+		}()
+
+		res, err := ssr.Render(urlPath, payload)
+		sendResult(renderResult{result: res, err: err})
+	}(acquired)
+
 	select {
 	case r := <-ch:
 		return r.result, r.err
-	case <-time.After(timeout):
+	case <-timer.C:
 		return renderer.Result{}, fmt.Errorf("render timeout after %s", timeout)
 	}
 }
