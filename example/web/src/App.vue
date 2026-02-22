@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+
+import { useSsrData } from '~/composables/useSsrData'
+
 interface ExamplePayload {
   message?: string
   path?: string
@@ -6,16 +10,15 @@ interface ExamplePayload {
   generatedAt?: string
 }
 
-const props = defineProps<{
-  url: string
-  payload: ExamplePayload
-}>()
+const payload = useSsrData<ExamplePayload>()
 
 const links = [
   { label: 'Home', href: '/' },
   { label: 'Hi gopher', href: '/hi/gopher' },
   { label: 'Hi vue + title', href: '/hi/vue?title=Ms.' },
 ]
+
+const urlArg = computed(() => payload.value.path ?? '-')
 </script>
 
 <template>
@@ -24,11 +27,11 @@ const links = [
     <p class="subtitle">Rendered by Go, hydrated by Vue.</p>
 
     <section class="card">
-      <p><strong>message:</strong> {{ props.payload.message ?? 'empty' }}</p>
-      <p><strong>path:</strong> {{ props.payload.path ?? '-' }}</p>
-      <p><strong>query:</strong> {{ props.payload.query ?? '-' }}</p>
-      <p><strong>generatedAt:</strong> {{ props.payload.generatedAt ?? '-' }}</p>
-      <p><strong>url arg:</strong> {{ props.url }}</p>
+      <p><strong>message:</strong> {{ payload.message ?? 'empty' }}</p>
+      <p><strong>path:</strong> {{ payload.path ?? '-' }}</p>
+      <p><strong>query:</strong> {{ payload.query ?? '-' }}</p>
+      <p><strong>generatedAt:</strong> {{ payload.generatedAt ?? '-' }}</p>
+      <p><strong>url arg:</strong> {{ urlArg }}</p>
     </section>
 
     <nav class="links">

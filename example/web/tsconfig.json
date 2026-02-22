@@ -6,7 +6,15 @@
     "strict": true,
     "jsx": "preserve",
     "skipLibCheck": true,
-    "types": ["vite/client"]
+    "baseUrl": ".",
+    "paths": {
+      "~/*": [
+        "src/*"
+      ]
+    },
+    "types": [
+      "vite/client"
+    ]
   },
   "include": [
     "src/**/*.ts",

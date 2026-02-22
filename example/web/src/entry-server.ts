@@ -1,11 +1,12 @@
 import { renderToString } from '@vue/server-renderer'
 
-import { makeApp } from './main'
-import type { ExamplePayload } from './main'
+import { makeApp } from '~/main'
+import type { SsrState } from '~/composables/useSsrData'
 
 export async function render(url: string) {
-  const initialState: ExamplePayload = (globalThis as any).__SSR_DATA__ ?? {}
-  const app = makeApp(url, initialState)
+  const initialState: SsrState = (globalThis as any).__SSR_DATA__ ?? {}
+  const { app, router } = makeApp(initialState)
+  await router.push(url)
 
   const ctx: any = {}
 
@@ -21,4 +22,4 @@ async function ssrRender(url: string) {
   return await render(url)
 }
 
-;(globalThis as any).ssrRender = ssrRender
+(globalThis as any).ssrRender = ssrRender

@@ -494,7 +494,7 @@ func cacheControlMiddleware(value string) gin.HandlerFunc {
 }
 
 func buildFallbackPage(indexHTML string, payload map[string]any, locale string, reqID string) string {
-	page := strings.Replace(indexHTML, "<!--app-html-->", `<div id="app"></div>`, 1)
+	page := strings.Replace(indexHTML, "<!--app-html-->", "", 1)
 	if locale != "" {
 		page = applyHTMLLang(page, locale)
 	}
