@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -33,11 +32,11 @@ func (p greetingPayload) AsMap() map[string]any {
 	}
 }
 
-var demoLocales = []string{"en", "zh"}
+var demoLocales = append([]string(nil), locales.Supported...)
+var localeMessages = mustLoadLocaleMessages()
 
 func init() {
 	registerLocalizedSSRRoute("/", homePayload)
-	registerLocalizedSSRRoute("/hi/:name", hiPayload)
 	registerLocalizedSSRRoute("/seo-demo", seoDemoPayload)
 	registerLocalizedSSRRoute("/session-demo", sessionDemoPayload)
 	registerLocalizedSSRRoute("/slow-ssr", slowSSRPayload)
@@ -46,57 +45,25 @@ func init() {
 
 func homePayload(c *gin.Context) (gossr.SSRPayload, error) {
 	locale := localeFromRequestPath(c.Request.URL.Path)
-	message := localizedText(locale, "Hello from gossr + Vue SSR", "来自 gossr + Vue SSR 的你好")
-	return buildPayload(c, message), nil
-}
-
-func hiPayload(c *gin.Context) (gossr.SSRPayload, error) {
-	locale := localeFromRequestPath(c.Request.URL.Path)
-	name := strings.TrimSpace(c.Param("name"))
-	if name == "" {
-		name = localizedText(locale, "friend", "朋友")
-	}
-
-	title := strings.TrimSpace(c.Query("title"))
-	if title != "" {
-		name = fmt.Sprintf("%s %s", title, name)
-	}
-
-	message := localizedText(
-		locale,
-		fmt.Sprintf("Hi, %s!", name),
-		fmt.Sprintf("你好，%s！", name),
-	)
+	message := localizedText(locale, "payload.home.message")
 	return buildPayload(c, message), nil
 }
 
 func seoDemoPayload(c *gin.Context) (gossr.SSRPayload, error) {
 	locale := localeFromRequestPath(c.Request.URL.Path)
-	message := localizedText(
-		locale,
-		"SEO head tags are rendered on server side",
-		"SEO Head 标签已在服务端渲染",
-	)
+	message := localizedText(locale, "payload.seo.message")
 	return buildPayload(c, message), nil
 }
 
 func sessionDemoPayload(c *gin.Context) (gossr.SSRPayload, error) {
 	locale := localeFromRequestPath(c.Request.URL.Path)
-	message := localizedText(
-		locale,
-		"Session is injected from session_token cookie",
-		"Session 已从 session_token cookie 注入",
-	)
+	message := localizedText(locale, "payload.session.message")
 	return buildPayload(c, message), nil
 }
 
 func slowSSRPayload(c *gin.Context) (gossr.SSRPayload, error) {
 	locale := localeFromRequestPath(c.Request.URL.Path)
-	message := localizedText(
-		locale,
-		"This route intentionally simulates slow SSR rendering",
-		"该路由会故意模拟慢速 SSR 渲染",
-	)
+	message := localizedText(locale, "payload.slowSsr.message")
 	return buildPayload(c, message), nil
 }
 
@@ -109,11 +76,7 @@ func slowFetchPayload(c *gin.Context) (gossr.SSRPayload, error) {
 	}
 
 	locale := localeFromRequestPath(c.Request.URL.Path)
-	message := localizedText(
-		locale,
-		"This route intentionally simulates slow __ssr_fetch payload",
-		"该路由会故意模拟慢速 __ssr_fetch 数据",
-	)
+	message := localizedText(locale, "payload.slowFetch.message")
 	return buildPayload(c, message), nil
 }
 
@@ -161,11 +124,19 @@ func localeFromRequestPath(rawPath string) string {
 	return locales.Default
 }
 
-func localizedText(locale string, en string, zh string) string {
-	if locale == "zh" {
-		return zh
+func localizedText(locale string, key string) string {
+	if localeMessages == nil {
+		return key
 	}
-	return en
+	return localeMessages.Translate(locale, key)
+}
+
+func mustLoadLocaleMessages() *web.LocaleMessages {
+	messages, err := web.LoadLocaleMessages()
+	if err != nil {
+		log.Fatalf("load locale messages failed: %v", err)
+	}
+	return messages
 }
 
 func main() {

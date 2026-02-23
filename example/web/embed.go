@@ -10,3 +10,6 @@ var FrontendDist embed.FS
 
 //go:embed all:dist/server
 var ServerDist embed.FS
+
+//go:embed all:src/locales
+var Locales embed.FS
