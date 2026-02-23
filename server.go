@@ -118,19 +118,9 @@ func RunBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher Backen
 				}
 			}
 
-			payloadMap = payloadToMap(payload)
-			if session := sessionStateFromRequest(c.Request); session != nil {
-				payloadMap["session"] = session
-			}
+			payloadMap = enrichPayloadFromRequest(payloadToMap(payload), c.Request)
 
 			locale := localeFromPath(c.Request.URL.Path)
-			if locale != "" {
-				payloadMap["locale"] = locale
-			}
-
-			if origin := requestOrigin(c.Request); origin != "" {
-				payloadMap["siteOrigin"] = origin
-			}
 
 			reqID := fmt.Sprintf("%d", time.Now().UnixNano())
 
@@ -229,6 +219,31 @@ func payloadToMap(payload SSRPayload) map[string]any {
 	}
 
 	return map[string]any{}
+}
+
+func enrichPayloadFromRequest(payload map[string]any, req *http.Request) map[string]any {
+	enriched := make(map[string]any, len(payload)+3)
+	for k, v := range payload {
+		enriched[k] = v
+	}
+
+	if req == nil {
+		return enriched
+	}
+
+	if session := sessionStateFromRequest(req); session != nil {
+		enriched["session"] = session
+	}
+
+	if locale := localeFromPath(req.URL.Path); locale != "" {
+		enriched["locale"] = locale
+	}
+
+	if origin := requestOrigin(req); origin != "" {
+		enriched["siteOrigin"] = origin
+	}
+
+	return enriched
 }
 
 type ssrSessionPayload struct {

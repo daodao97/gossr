@@ -60,9 +60,24 @@ func Router(group *gin.RouterGroup) {
 		w := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, ssrPath+"?"+c.Request.URL.RawQuery, nil)
 		req = req.WithContext(c.Request.Context())
+		req.Header = c.Request.Header.Clone()
+		req.Host = c.Request.Host
+		req.TLS = c.Request.TLS
+		req.RemoteAddr = c.Request.RemoteAddr
 		SsrEngine.ServeHTTP(w, req)
 
-		c.Data(w.Code, "application/json", w.Body.Bytes())
+		if w.Code != http.StatusOK {
+			c.Data(w.Code, "application/json", w.Body.Bytes())
+			return
+		}
+
+		var data map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
+			c.Data(w.Code, "application/json", w.Body.Bytes())
+			return
+		}
+
+		c.JSON(http.StatusOK, enrichPayloadFromRequest(data, req))
 	})
 }
 

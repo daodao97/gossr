@@ -2,7 +2,14 @@ import type { SsrState } from '~/composables/useSsrData'
 
 import { watch } from 'vue'
 import { makeApp } from '~/main'
-import { availableLocales, defaultLocale, getLocaleRef, isSupportedLocale } from '~/modules/i18n'
+import {
+  availableLocales,
+  defaultLocale,
+  getLocaleRef,
+  isSupportedLocale,
+  localeFromPath,
+  type SupportedLocale,
+} from '~/modules/i18n'
 
 declare global {
   interface Window {
@@ -16,13 +23,16 @@ const initialState = ssrPayload ?? {}
 const { app, router, ssrContext, i18n } = makeApp(initialState)
 const SSR_FETCH_TIMEOUT_MS = 5000
 const persistentSsrKeys = new Set(['session', 'locale', 'siteOrigin'])
+const localeRef = getLocaleRef(i18n)
 
 if (typeof window !== 'undefined') {
   const savedLocale = window.localStorage.getItem('locale')
-  const localeRef = getLocaleRef(i18n)
+  const routeLocale = localeFromPath(window.location.pathname)
 
-  if (savedLocale && isSupportedLocale(savedLocale))
+  if (savedLocale && isSupportedLocale(savedLocale) && routeLocale === defaultLocale)
     localeRef.value = savedLocale
+  else
+    localeRef.value = routeLocale
 
   document.documentElement.setAttribute('lang', localeRef.value)
 
@@ -32,8 +42,6 @@ if (typeof window !== 'undefined') {
       document.documentElement.setAttribute('lang', newLocale)
     }
   })
-
-  installClientNavigation()
 }
 // Respect saved locale in URL if there's no locale segment
 let fullPath = window.location.pathname + window.location.search
@@ -46,7 +54,6 @@ let fullPath = window.location.pathname + window.location.search
     return pathname === `/${code}` || next === '/'
   })
 
-  const localeRef = getLocaleRef(i18n)
   const preferred = localeRef.value
 
   if (!hasLocaleSegment && isSupportedLocale(preferred) && availableLocales.includes(preferred)) {
@@ -61,23 +68,25 @@ let fullPath = window.location.pathname + window.location.search
 let isFirstNavigation = true
 let latestSsrFetchId = 0
 
-router.beforeResolve((to, from, next) => {
+router.beforeResolve((to, from) => {
+  const targetLocale = localeFromPath(to.path)
+  if (localeRef.value !== targetLocale)
+    localeRef.value = targetLocale
+
   if (isFirstNavigation) {
     isFirstNavigation = false
-    return next()
+    return true
   }
 
   if (to.fullPath === from.fullPath)
-    return next()
+    return true
 
-  // Skip SSR data fetching if route meta explicitly disables it
-  if (to.meta.ssrData === false) {
+  if (!shouldFetchSsrDataForRoute(to)) {
     clearRouteSsrState()
-    return next()
+    return true
   }
 
   clearRouteSsrState()
-  next()
 
   const fetchId = ++latestSsrFetchId
   void fetchSsrData(to.fullPath)
@@ -94,6 +103,8 @@ router.beforeResolve((to, from, next) => {
 
       console.error('Failed to fetch SSR data', error)
     })
+
+  return true
 })
 
 router.replace(fullPath)
@@ -102,7 +113,7 @@ router.isReady().then(() => {
   delete window.__SSR_DATA__
 
   // Avoid blocking first paint when no server-injected payload is present.
-  if (!hasInitialSsrPayload && router.currentRoute.value.meta.ssrData !== false)
+  if (!hasInitialSsrPayload && shouldFetchSsrDataForRoute(router.currentRoute.value))
     void fetchInitialSsrData(router.currentRoute.value.fullPath)
 })
 
@@ -183,44 +194,6 @@ function shouldHydrateApp(): boolean {
   return appRoot.innerHTML.trim().length > 0
 }
 
-function installClientNavigation() {
-  document.addEventListener('click', (event) => {
-    if (event.defaultPrevented || event.button !== 0)
-      return
-
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
-      return
-
-    const target = event.target
-    if (!(target instanceof Element))
-      return
-
-    const anchor = target.closest('a[href]')
-    if (!(anchor instanceof HTMLAnchorElement))
-      return
-
-    if (anchor.target && anchor.target !== '_self')
-      return
-
-    if (anchor.hasAttribute('download'))
-      return
-
-    const rel = anchor.getAttribute('rel') ?? ''
-    if (rel.split(/\s+/).includes('external'))
-      return
-
-    const url = new URL(anchor.href, window.location.href)
-    if (url.protocol !== 'http:' && url.protocol !== 'https:')
-      return
-
-    if (url.origin !== window.location.origin)
-      return
-
-    const nextPath = `${url.pathname}${url.search}${url.hash}`
-    if (nextPath === router.currentRoute.value.fullPath)
-      return
-
-    event.preventDefault()
-    void router.push(nextPath)
-  })
+function shouldFetchSsrDataForRoute(route: { meta: { ssrData?: boolean } }): boolean {
+  return route.meta.ssrData !== false
 }

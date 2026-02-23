@@ -27,7 +27,7 @@ dev: ## Go 开发模式（需先执行 make web-dev）
 	DEV_MODE=1 DEV_SERVER_URL=$(DEV_SERVER_URL) $(GO) run -tags nov8 .
 
 run: ## Go 生产模式运行（需先执行 make web-build）
-	$(GO) run .
+	$(GO) run -tags nov8 .
 
 test: ## 运行 Go 测试（goja 路径）
 	$(GO) test -tags nov8 ./...

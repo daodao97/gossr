@@ -2,9 +2,17 @@ import { fileURLToPath, URL } from 'node:url'
 
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import vueRouter from 'vue-router/vite'
 
-export default defineConfig({
-  plugins: [vue()],
+export default defineConfig(({ command }) => ({
+  plugins: [
+    vueRouter({
+      routesFolder: 'src/pages',
+      dts: 'src/typed-router.d.ts',
+      watch: command === 'serve',
+    }),
+    vue(),
+  ],
   resolve: {
     alias: {
       '~': fileURLToPath(new URL('./src', import.meta.url)),
@@ -23,4 +31,4 @@ export default defineConfig({
   build: {
     target: 'es2020',
   },
-})
+}))
