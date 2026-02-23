@@ -133,6 +133,10 @@ func (p *runtimePool) Put(rt *goja.Runtime) {
 	if rt == nil {
 		return
 	}
+
+	// runtime 可能被 Interrupt 过，归还前必须清理中断标记。
+	rt.ClearInterrupt()
+
 	// 清理 per-request 数据
 	_ = rt.Set("__SSR_DATA__", goja.Undefined())
 	_ = rt.Set("__SSR_HEAD__", goja.Undefined())

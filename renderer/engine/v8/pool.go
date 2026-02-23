@@ -141,11 +141,20 @@ func (p *V8IsolatePool) Put(container *V8IsolateContainer) {
 		// 成功归还
 	default:
 		// 池满，释放多余的 isolate
-		p.mu.Lock()
-		p.currentSize--
-		p.mu.Unlock()
-		container.Isolate.Dispose()
+		p.Discard(container)
 	}
+}
+
+// Discard 丢弃 isolate 并更新池计数。
+func (p *V8IsolatePool) Discard(container *V8IsolateContainer) {
+	if container == nil {
+		return
+	}
+
+	p.mu.Lock()
+	p.currentSize--
+	p.mu.Unlock()
+	container.Isolate.Dispose()
 }
 
 // Close 关闭池并释放所有资源

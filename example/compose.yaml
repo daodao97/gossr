@@ -1,0 +1,13 @@
+services:
+  app:
+    container_name: gossr-example
+    build:
+      context: ..
+      dockerfile: example/Dockerfile
+      target: final
+    image: gossr-example:latest
+    environment:
+      SSR_RENDER_LIMIT: ${SSR_RENDER_LIMIT:-4}
+    ports:
+      - "8080:8080"
+    restart: unless-stopped

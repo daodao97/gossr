@@ -1,0 +1,12 @@
+.git
+.gitignore
+
+.gocache
+.gomodcache
+benchmark_output
+
+example/web/node_modules
+example/web/dist
+
+tmp
+*.log

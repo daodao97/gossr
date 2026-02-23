@@ -1,8 +1,10 @@
 package gojs
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/daodao97/gossr/renderer"
 	"github.com/dop251/goja"
@@ -25,11 +27,28 @@ func NewRenderer(scriptContents string) *Renderer {
 }
 
 // Render 同步执行 ssrRender，支持 Promise 结果。
-func (r *Renderer) Render(urlPath string, payload map[string]any) (renderer.Result, error) {
+func (r *Renderer) Render(ctx context.Context, urlPath string, payload map[string]any) (renderer.Result, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	rt, err := r.pool.Get()
 	if err != nil {
 		return renderer.Result{}, err
 	}
+
+	var interrupted atomic.Bool
+	stopWatch := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			interrupted.Store(true)
+			rt.Interrupt(ctx.Err())
+		case <-stopWatch:
+		}
+	}()
+
+	defer close(stopWatch)
 	defer r.pool.Put(rt)
 
 	// 注入 SSR 数据
@@ -50,11 +69,17 @@ func (r *Renderer) Render(urlPath string, payload map[string]any) (renderer.Resu
 
 	val, err := renderFunc(goja.Undefined(), rt.ToValue(urlPath))
 	if err != nil {
+		if interrupted.Load() && ctx.Err() != nil {
+			return renderer.Result{}, ctx.Err()
+		}
 		return renderer.Result{}, formatGojaError(err)
 	}
 
 	resultVal, err := resolveGojaValue(val)
 	if err != nil {
+		if interrupted.Load() && ctx.Err() != nil {
+			return renderer.Result{}, ctx.Err()
+		}
 		return renderer.Result{}, formatGojaError(err)
 	}
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -24,7 +25,6 @@ var errNotFound = errors.New("not found")
 var SsrEngine *gin.Engine
 
 func init() {
-	gin.SetMode(gin.ReleaseMode)
 	SsrEngine = gin.New()
 	SsrEngine.Use(gin.Recovery())
 }
@@ -38,7 +38,12 @@ func WrapSSR(h func(*gin.Context) (SSRPayload, error)) gin.HandlerFunc {
 			return
 		}
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			log.Printf("ssr handler failed path=%s err=%v", c.Request.URL.Path, err)
+			if exposeSSRErrors() {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
 			return
 		}
 		if payload == nil {
@@ -46,6 +51,15 @@ func WrapSSR(h func(*gin.Context) (SSRPayload, error)) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusOK, payload.AsMap())
+	}
+}
+
+func exposeSSRErrors() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("SSR_EXPOSE_HANDLER_ERROR"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -83,12 +97,53 @@ func Router(group *gin.RouterGroup) {
 
 // Resolve 服务端内部调用，获取 SSR 数据
 func Resolve(ctx context.Context, rawPath, rawQuery string) (SSRPayload, int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	cleanPath := path.Clean("/" + strings.TrimPrefix(strings.TrimSpace(rawPath), "/"))
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, cleanPath+"?"+rawQuery, nil)
 	req = req.WithContext(ctx)
 	SsrEngine.ServeHTTP(w, req)
+
+	if w.Code == http.StatusNotFound {
+		return nil, http.StatusNotFound, nil
+	}
+
+	if w.Code != http.StatusOK {
+		return nil, w.Code, fmt.Errorf("ssr handler returned %d", w.Code)
+	}
+
+	var data map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
+		return nil, http.StatusInternalServerError, err
+	}
+
+	return mapPayload(data), http.StatusOK, nil
+}
+
+func resolveRequest(ctx context.Context, req *http.Request) (SSRPayload, int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if req == nil || req.URL == nil {
+		return nil, http.StatusInternalServerError, fmt.Errorf("nil request")
+	}
+
+	cleanPath := path.Clean("/" + strings.TrimPrefix(strings.TrimSpace(req.URL.Path), "/"))
+
+	w := httptest.NewRecorder()
+	internalReq := httptest.NewRequest(http.MethodGet, cleanPath+"?"+req.URL.RawQuery, nil)
+	internalReq = internalReq.WithContext(ctx)
+	internalReq.Header = req.Header.Clone()
+	internalReq.Host = req.Host
+	internalReq.TLS = req.TLS
+	internalReq.RemoteAddr = req.RemoteAddr
+
+	SsrEngine.ServeHTTP(w, internalReq)
 
 	if w.Code == http.StatusNotFound {
 		return nil, http.StatusNotFound, nil
@@ -198,7 +253,7 @@ func registerSSRFetchRoutes(r *gin.Engine) BackendDataFetcher {
 	Router(group)
 
 	return func(ctx context.Context, req *http.Request) (SSRPayload, error) {
-		payload, status, err := Resolve(ctx, req.URL.Path, req.URL.RawQuery)
+		payload, status, err := resolveRequest(ctx, req)
 		if err != nil {
 			return nil, err
 		}
@@ -250,7 +305,7 @@ func sameOriginRequest(r *http.Request) bool {
 		origin = r.Header.Get("Referer")
 	}
 	if origin == "" {
-		return true
+		return false
 	}
 
 	parsed, err := url.Parse(origin)

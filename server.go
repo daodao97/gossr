@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/daodao97/gossr/locales"
@@ -33,9 +35,37 @@ type FrontendBuild struct {
 
 type BackendDataFetcher func(context.Context, *http.Request) (SSRPayload, error)
 
+// SessionTokenParser 可自定义 session_token 的解析和校验逻辑。
+// 返回的 map 会直接注入 payload.session。
+type SessionTokenParser func(token string) (map[string]any, error)
+
 const DefaultSSRFetchPrefix = "/__ssr_fetch"
 
 var langAttributePattern = regexp.MustCompile(`lang="[^"]*"`)
+
+var (
+	sessionTokenParserMu sync.RWMutex
+	sessionTokenParser   SessionTokenParser = defaultSessionTokenParser
+)
+
+// SetSessionTokenParser 设置 session_token 解析器；传 nil 可恢复默认实现。
+func SetSessionTokenParser(parser SessionTokenParser) {
+	sessionTokenParserMu.Lock()
+	defer sessionTokenParserMu.Unlock()
+
+	if parser == nil {
+		sessionTokenParser = defaultSessionTokenParser
+		return
+	}
+
+	sessionTokenParser = parser
+}
+
+func getSessionTokenParser() SessionTokenParser {
+	sessionTokenParserMu.RLock()
+	defer sessionTokenParserMu.RUnlock()
+	return sessionTokenParser
+}
 
 func RunBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher BackendDataFetcher) {
 	devMode := isDevMode()
@@ -260,29 +290,39 @@ func sessionStateFromRequest(r *http.Request) map[string]any {
 		return nil
 	}
 
-	decoded, err := base64.StdEncoding.DecodeString(cookie.Value)
-	if err != nil {
+	parser := getSessionTokenParser()
+	session, err := parser(cookie.Value)
+	if err != nil || session == nil {
 		return nil
+	}
+
+	return session
+}
+
+func defaultSessionTokenParser(token string) (map[string]any, error) {
+	decoded, err := base64.StdEncoding.DecodeString(token)
+	if err != nil {
+		return nil, err
 	}
 
 	var payload ssrSessionPayload
 	if err := json.Unmarshal(decoded, &payload); err != nil {
-		return nil
+		return nil, err
 	}
 
 	if payload.Email == "" {
-		return nil
+		return nil, errors.New("missing email in session payload")
 	}
 
 	return map[string]any{
-		"session_token": cookie.Value,
+		"session_token": token,
 		"user": map[string]any{
 			"id":       payload.ID,
 			"name":     payload.Name,
 			"email":    payload.Email,
 			"provider": payload.Provider,
 		},
-	}
+	}, nil
 }
 
 func readFSFile(f fs.FS, name string) ([]byte, error) {
@@ -290,6 +330,9 @@ func readFSFile(f fs.FS, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		_ = file.Close()
+	}()
 
 	contents, err := io.ReadAll(file)
 	if err != nil {
@@ -371,60 +414,35 @@ func newDevProxy(rawURL string) *httputil.ReverseProxy {
 	return proxy
 }
 
-func renderWithTimeout(ssr renderer.Renderer, urlPath string, payload map[string]any, timeout time.Duration, sem chan struct{}) (renderer.Result, error) {
-	type renderResult struct {
-		result renderer.Result
-		err    error
-	}
+func renderWithTimeout(ssr renderer.Renderer, urlPath string, payload map[string]any, timeout time.Duration, sem chan struct{}) (result renderer.Result, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = renderer.Result{}
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
 
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
 
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
-	ch := make(chan renderResult, 1)
-	done := make(chan struct{})
-	defer close(done)
-
-	sendResult := func(r renderResult) {
-		select {
-		case ch <- r:
-		case <-done:
-		}
-	}
-
-	acquired := false
 	if sem != nil {
 		select {
 		case sem <- struct{}{}:
-			acquired = true
-		case <-timer.C:
+			defer func() { <-sem }()
+		case <-ctx.Done():
 			return renderer.Result{}, fmt.Errorf("render timeout after %s", timeout)
 		}
 	}
 
-	go func(releaseSem bool) {
-		if releaseSem {
-			defer func() { <-sem }()
-		}
-		defer func() {
-			if r := recover(); r != nil {
-				sendResult(renderResult{err: fmt.Errorf("panic: %v", r)})
-			}
-		}()
-
-		res, err := ssr.Render(urlPath, payload)
-		sendResult(renderResult{result: res, err: err})
-	}(acquired)
-
-	select {
-	case r := <-ch:
-		return r.result, r.err
-	case <-timer.C:
+	result, err = ssr.Render(ctx, urlPath, payload)
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return renderer.Result{}, fmt.Errorf("render timeout after %s", timeout)
 	}
+	return result, err
 }
 
 func renderConcurrencyLimit() int {
@@ -438,7 +456,9 @@ func renderConcurrencyLimit() int {
 
 func prewarmRenderer(ssr renderer.Renderer) {
 	go func() {
-		_, _ = ssr.Render("/", nil)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, _ = ssr.Render(ctx, "/", nil)
 	}()
 }
 
