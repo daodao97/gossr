@@ -337,3 +337,29 @@ func TestSessionTokenParserResetToDefault(t *testing.T) {
 		t.Fatal("expected default parser to parse base64 JSON session")
 	}
 }
+
+func TestIsStaticAssetLikePath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "favicon", path: "/favicon.ico", want: true},
+		{name: "root txt", path: "/robots.txt", want: true},
+		{name: "nested js", path: "/assets/app.js", want: true},
+		{name: "locale svg", path: "/en/logo.svg", want: true},
+		{name: "root page", path: "/", want: false},
+		{name: "locale root", path: "/zh", want: false},
+		{name: "normal route", path: "/slow-ssr", want: false},
+		{name: "dot in middle segment", path: "/a.b/c", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isStaticAssetLikePath(tt.path)
+			if got != tt.want {
+				t.Fatalf("isStaticAssetLikePath(%q)=%v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}

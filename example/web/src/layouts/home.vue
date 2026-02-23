@@ -33,7 +33,7 @@ const links = computed(() => {
     ...link,
     to: localizeMenuTarget(link.to, localeState.value),
     label: t(link.labelKey),
-    active: stripLocalePrefix(new URL(link.to, 'http://ssr.local').pathname) === currentNormalizedPath.value,
+    active: stripLocalePrefix(parsePathTarget(link.to).pathname) === currentNormalizedPath.value,
   }))
 })
 
@@ -72,7 +72,7 @@ function withLocalePrefix(locale: SupportedLocale, normalizedPath: string): stri
 }
 
 function localizeMenuTarget(rawTarget: string, state: LocaleState): string {
-  const parsed = new URL(rawTarget, 'http://ssr.local')
+  const parsed = parsePathTarget(rawTarget)
   const normalizedPath = stripLocalePrefix(parsed.pathname)
 
   // 默认 locale 且 URL 本身不带 locale 前缀时，导航保持无前缀。
@@ -84,10 +84,46 @@ function localizeMenuTarget(rawTarget: string, state: LocaleState): string {
 }
 
 function switchLocaleTarget(rawTarget: string, locale: SupportedLocale): string {
-  const parsed = new URL(rawTarget, 'http://ssr.local')
+  const parsed = parsePathTarget(rawTarget)
   const normalizedPath = stripLocalePrefix(parsed.pathname)
   const localizedPath = locale === defaultLocale ? normalizedPath : withLocalePrefix(locale, normalizedPath)
   return `${localizedPath}${parsed.search}${parsed.hash}`
+}
+
+interface ParsedPathTarget {
+  pathname: string
+  search: string
+  hash: string
+}
+
+function parsePathTarget(rawTarget: string): ParsedPathTarget {
+  const target = rawTarget.trim()
+  if (!target)
+    return { pathname: '/', search: '', hash: '' }
+
+  let pathAndQuery = target
+  let hash = ''
+
+  const hashIndex = target.indexOf('#')
+  if (hashIndex >= 0) {
+    pathAndQuery = target.slice(0, hashIndex)
+    hash = target.slice(hashIndex)
+  }
+
+  let pathname = pathAndQuery
+  let search = ''
+  const queryIndex = pathAndQuery.indexOf('?')
+  if (queryIndex >= 0) {
+    pathname = pathAndQuery.slice(0, queryIndex)
+    search = pathAndQuery.slice(queryIndex)
+  }
+
+  if (!pathname)
+    pathname = '/'
+  if (!pathname.startsWith('/'))
+    pathname = `/${pathname}`
+
+  return { pathname, search, hash }
 }
 </script>
 

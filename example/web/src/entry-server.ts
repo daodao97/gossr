@@ -29,8 +29,8 @@ async function ssrRender(url: string) {
 (globalThis as any).ssrRender = ssrRender
 
 function shouldSimulateSlowSSR(rawURL: string): boolean {
-  const url = new URL(rawURL, 'http://ssr.local')
-  return /^(\/(en|zh))?\/slow-ssr$/.test(url.pathname)
+  const pathname = rawURL.split('#')[0].split('?')[0]
+  return /^(\/(en|zh))?\/slow-ssr$/.test(pathname)
 }
 
 function sleep(ms: number): Promise<void> {

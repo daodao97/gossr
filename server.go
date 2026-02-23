@@ -15,6 +15,7 @@ import (
 	"net/http/pprof"
 	"net/url"
 	"os"
+	"path"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -129,6 +130,10 @@ func RunBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher Backen
 
 		router.NoRoute(func(c *gin.Context) {
 			if strings.HasPrefix(c.Request.URL.Path, DefaultSSRFetchPrefix) {
+				c.Status(http.StatusNotFound)
+				return
+			}
+			if isStaticAssetLikePath(c.Request.URL.Path) {
 				c.Status(http.StatusNotFound)
 				return
 			}
@@ -519,6 +524,20 @@ func registerRootStaticFiles(router *gin.Engine, frontendDist fs.FS) {
 			}
 		}(name))
 	}
+}
+
+func isStaticAssetLikePath(rawPath string) bool {
+	trimmed := strings.TrimSpace(rawPath)
+	if trimmed == "" || trimmed == "/" {
+		return false
+	}
+
+	base := path.Base(strings.TrimRight(trimmed, "/"))
+	if base == "" || base == "." || base == "/" {
+		return false
+	}
+
+	return path.Ext(base) != ""
 }
 
 func cacheControlMiddleware(value string) gin.HandlerFunc {
