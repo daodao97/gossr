@@ -126,7 +126,7 @@ router.isReady().then(() => {
 
 async function fetchSsrData(path: string, timeoutMs = SSR_FETCH_TIMEOUT_MS): Promise<Record<string, unknown>> {
   const url = new URL(path, window.location.origin)
-  const endpoint = `/__ssr_fetch${url.pathname}${url.search}`
+  const endpoint = `/_ssr/data${url.pathname}${url.search}`
   const controller = new AbortController()
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs)
 

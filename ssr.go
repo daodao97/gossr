@@ -249,7 +249,7 @@ func staticCacheMiddleware() gin.HandlerFunc {
 }
 
 func registerSSRFetchRoutes(r *gin.Engine) BackendDataFetcher {
-	group := r.Group(DefaultSSRFetchPrefix, ssrGuardMiddleware())
+	group := r.Group(DefaultSSRDataRoute, ssrGuardMiddleware())
 	Router(group)
 
 	return func(ctx context.Context, req *http.Request) (SSRPayload, error) {

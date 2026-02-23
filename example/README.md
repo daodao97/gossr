@@ -57,7 +57,7 @@ make web-dev
 make dev
 ```
 
-开发模式下后端会把非 `/__ssr_fetch` 请求代理到 `DEV_SERVER_URL`
+开发模式下后端会把非 `/_ssr/data` 请求代理到 `DEV_SERVER_URL`
 （默认 `http://127.0.0.1:3333`）。
 
 ### 生产模式
@@ -112,7 +112,7 @@ docker compose down
   - `/demo/session/logout?next=/session-demo`
 - SSR 超时 fallback：
   - `/slow-ssr`
-- `__ssr_fetch` 慢数据示例：
+- `_ssr/data` 慢数据示例：
   - `/slow-fetch`
 
 ## 示例覆盖能力
@@ -144,20 +144,20 @@ docker compose down
 - 超过默认 `3s` 渲染超时后，服务端返回 fallback 页面
 - 响应中会注入 `meta[name="ssr-error-id"]`，客户端接管后可读取该标识
 
-### 5) `__ssr_fetch` 慢数据
+### 5) `_ssr/data` 慢数据
 
 - 路由：`/slow-fetch`
-- 后端 `__ssr_fetch` handler 对该路由故意延迟 `3.5s`
+- 后端 `_ssr/data` handler 对该路由故意延迟 `3.5s`
 - 用于演示“数据阶段慢”，不是“SSR 渲染阶段慢”
 - 该路由不应产生 `ssr-error-id` fallback（除非同时触发了其他渲染异常）
 
-## `/__ssr_fetch` 调试方式
+## `/_ssr/data` 调试方式
 
-示例中的 SSR 数据接口挂在 `/__ssr_fetch/*path`，可直接调试：
+示例中的 SSR 数据接口挂在 `/_ssr/data/*path`，可直接调试：
 
 ```bash
 curl -H "X-SSR-Fetch: 1" \
-  "http://127.0.0.1:8080/__ssr_fetch/hi/gopher?title=Ms."
+  "http://127.0.0.1:8080/_ssr/data/hi/gopher?title=Ms."
 ```
 
 如果配置了 `SSR_FETCH_TOKEN`，还需增加 `X-SSR-Token: <token>`。

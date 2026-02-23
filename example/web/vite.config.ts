@@ -22,7 +22,7 @@ export default defineConfig(({ command }) => ({
     host: '127.0.0.1',
     port: 3333,
     proxy: {
-      '/__ssr_fetch': {
+      '/_ssr/data': {
         target: 'http://127.0.0.1:8080',
         changeOrigin: true,
       },

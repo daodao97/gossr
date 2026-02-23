@@ -7,7 +7,7 @@
 
 - SSR 渲染：执行 `server.js` 中的 `ssrRender(url)`
 - 页面数据：通过 `gossr.SsrEngine + gossr.WrapSSR` 组织 SSR 数据接口
-- 数据通道：自动挂载 `/__ssr_fetch`，支持前端请求与服务端内部 `Resolve`
+- 数据通道：自动挂载 `/_ssr/data`，支持前端请求与服务端内部 `Resolve`
 - 注入能力：注入 HTML、`<head>` 内容、`window.__SSR_DATA__`
 - 运行保障：渲染超时、并发限制、fallback 页面
 - 模式切换：dev 代理 + 生产静态资源分发
@@ -156,9 +156,9 @@ func main() {
 
 ## 运行时约定（接入前必读）
 
-- `gossr.Ssr` 会挂载 `/__ssr_fetch/*path` 路由。
+- `gossr.Ssr` 会挂载 `/_ssr/data/*path` 路由。
 - `gossr.Ssr` 会接管 `Gin NoRoute`。
-- dev 模式下，非 `/__ssr_fetch` 请求会被代理到 `DEV_SERVER_URL`。
+- dev 模式下，非 `/_ssr/data` 请求会被代理到 `DEV_SERVER_URL`。
 - 生产模式下，`NoRoute` 会执行 SSR：取数据 -> 渲染 -> 注入 -> 返回 HTML。
 - 渲染失败或超时时，会返回 fallback 页面，并注入：
   - `meta[name="ssr-error-id"]`
@@ -179,7 +179,7 @@ type SSRPayload interface {
 
 - `WrapSSR`：把业务 handler 统一转成 JSON 输出。
 - `Resolve`：服务端内部调用 SSR 数据路由并拿到 payload。
-- `Router`：将内部 `SsrEngine` 路由映射到 `/__ssr_fetch`。
+- `Router`：将内部 `SsrEngine` 路由映射到 `/_ssr/data`。
 - `WrapSSR` 默认会对 `500` 错误做脱敏（返回 `internal server error`）。
   - 如需调试原始错误，可设置 `SSR_EXPOSE_HANDLER_ERROR=1`。
 
@@ -217,7 +217,7 @@ gossr.SetSessionTokenParser(func(token string) (map[string]any, error) {
 }
 ```
 
-## `/__ssr_fetch` 访问保护
+## `/_ssr/data` 访问保护
 
 - 同源请求：当 `Origin/Referer` 可识别且与 Host 一致时允许访问。
 - 非同源请求：必须带 `X-SSR-Fetch: 1`，否则返回 `403`。
@@ -243,7 +243,7 @@ gossr.SetSessionTokenParser(func(token string) (map[string]any, error) {
 - `DEV_SERVER_URL`：dev 代理地址，默认 `http://127.0.0.1:3333`
 - `SSR_ENGINE`：`v8` / `goja`（默认 `v8`，仅默认构建下有效）
 - `SSR_RENDER_LIMIT`：SSR 并发渲染上限
-- `SSR_FETCH_TOKEN`：`/__ssr_fetch` 共享 token
+- `SSR_FETCH_TOKEN`：`/_ssr/data` 共享 token
 - `SSR_EXPOSE_HANDLER_ERROR`：`1/true/yes/on` 时，`WrapSSR` 返回原始 handler 错误文本
 - `ENABLE_PPROF`：`1/true/yes/on` 启用 pprof；未设置时 dev 模式默认启用
 - `GOJA_POOL_SIZE` / `GOJA_POOL_TIMEOUT`：goja 池大小与获取超时（默认超时 `5s`）
@@ -281,5 +281,5 @@ cd ..
 ## 已知注意事项
 
 - 接入后会接管 `NoRoute`，请先确认与现有项目路由策略不冲突。
-- 内置 `/__ssr_fetch`、`/i/:invite_code`、`/debug/pprof` 路径，避免和业务路径冲突。
+- 内置 `/_ssr/data`、`/i/:invite_code`、`/debug/pprof` 路径，避免和业务路径冲突。
 - 生产模式依赖前端产物完整存在：`dist/client/index.html`、`dist/client/assets`、`dist/server/server.js`。

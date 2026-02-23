@@ -40,7 +40,7 @@ type BackendDataFetcher func(context.Context, *http.Request) (SSRPayload, error)
 // 返回的 map 会直接注入 payload.session。
 type SessionTokenParser func(token string) (map[string]any, error)
 
-const DefaultSSRFetchPrefix = "/__ssr_fetch"
+const DefaultSSRDataRoute = "/_ssr/data"
 
 var langAttributePattern = regexp.MustCompile(`lang="[^"]*"`)
 
@@ -90,7 +90,7 @@ func RunBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher Backen
 		proxy = newDevProxy(devServerURL())
 		log.Printf("Development mode enabled. Proxying to %s", devServerURL())
 		router.NoRoute(func(c *gin.Context) {
-			if strings.HasPrefix(c.Request.URL.Path, DefaultSSRFetchPrefix) {
+			if strings.HasPrefix(c.Request.URL.Path, DefaultSSRDataRoute) {
 				c.Status(http.StatusNotFound)
 				return
 			}
@@ -129,7 +129,7 @@ func RunBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher Backen
 		registerRootStaticFiles(router, frontendBuild.FrontendDist)
 
 		router.NoRoute(func(c *gin.Context) {
-			if strings.HasPrefix(c.Request.URL.Path, DefaultSSRFetchPrefix) {
+			if strings.HasPrefix(c.Request.URL.Path, DefaultSSRDataRoute) {
 				c.Status(http.StatusNotFound)
 				return
 			}

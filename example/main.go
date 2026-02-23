@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -37,6 +38,7 @@ var localeMessages = mustLoadLocaleMessages()
 
 func init() {
 	registerLocalizedSSRRoute("/", homePayload)
+	registerLocalizedSSRRoute("/hi/:name", hiPayload)
 	registerLocalizedSSRRoute("/seo-demo", seoDemoPayload)
 	registerLocalizedSSRRoute("/session-demo", sessionDemoPayload)
 	registerLocalizedSSRRoute("/slow-ssr", slowSSRPayload)
@@ -46,6 +48,22 @@ func init() {
 func homePayload(c *gin.Context) (gossr.SSRPayload, error) {
 	locale := localeFromRequestPath(c.Request.URL.Path)
 	message := localizedText(locale, "payload.home.message")
+	return buildPayload(c, message), nil
+}
+
+func hiPayload(c *gin.Context) (gossr.SSRPayload, error) {
+	locale := localeFromRequestPath(c.Request.URL.Path)
+	name := strings.TrimSpace(c.Param("name"))
+	if name == "" {
+		name = localizedText(locale, "payload.hi.friend")
+	}
+
+	title := strings.TrimSpace(c.Query("title"))
+	if title != "" {
+		name = fmt.Sprintf("%s %s", title, name)
+	}
+
+	message := fmt.Sprintf(localizedText(locale, "payload.hi.template"), name)
 	return buildPayload(c, message), nil
 }
 
@@ -68,7 +86,7 @@ func slowSSRPayload(c *gin.Context) (gossr.SSRPayload, error) {
 }
 
 func slowFetchPayload(c *gin.Context) (gossr.SSRPayload, error) {
-	// 模拟 __ssr_fetch 慢查询：只延迟数据阶段，不影响 SSR 渲染阶段逻辑。
+	// 模拟 _ssr/data 慢查询：只延迟数据阶段，不影响 SSR 渲染阶段逻辑。
 	select {
 	case <-time.After(3500 * time.Millisecond):
 	case <-c.Request.Context().Done():

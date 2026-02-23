@@ -97,7 +97,7 @@ func TestRouterFetchInjectsSessionInDevFlow(t *testing.T) {
 	})
 
 	router := gin.New()
-	Router(router.Group(DefaultSSRFetchPrefix))
+	Router(router.Group(DefaultSSRDataRoute))
 
 	sessionRaw, err := json.Marshal(map[string]any{
 		"id":       "u_demo_1001",
@@ -112,7 +112,7 @@ func TestRouterFetchInjectsSessionInDevFlow(t *testing.T) {
 	sessionToken := base64.StdEncoding.EncodeToString(sessionRaw)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, DefaultSSRFetchPrefix+"/session-demo", nil)
+	req := httptest.NewRequest(http.MethodGet, DefaultSSRDataRoute+"/session-demo", nil)
 	req.Host = "127.0.0.1:8080"
 	req.AddCookie(&http.Cookie{Name: "session_token", Value: sessionToken})
 	router.ServeHTTP(w, req)
@@ -165,7 +165,7 @@ func TestSSRFetchRejectsMissingOriginWithoutFlagHeader(t *testing.T) {
 
 	t.Run("missing origin and missing header", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, DefaultSSRFetchPrefix+"/guard-demo", nil)
+		req := httptest.NewRequest(http.MethodGet, DefaultSSRDataRoute+"/guard-demo", nil)
 		req.Host = "127.0.0.1:8080"
 		router.ServeHTTP(w, req)
 		if w.Code != http.StatusForbidden {
@@ -175,7 +175,7 @@ func TestSSRFetchRejectsMissingOriginWithoutFlagHeader(t *testing.T) {
 
 	t.Run("missing origin but explicit header", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, DefaultSSRFetchPrefix+"/guard-demo", nil)
+		req := httptest.NewRequest(http.MethodGet, DefaultSSRDataRoute+"/guard-demo", nil)
 		req.Host = "127.0.0.1:8080"
 		req.Header.Set("X-SSR-Fetch", "1")
 		router.ServeHTTP(w, req)
@@ -186,7 +186,7 @@ func TestSSRFetchRejectsMissingOriginWithoutFlagHeader(t *testing.T) {
 
 	t.Run("same origin without explicit header", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, DefaultSSRFetchPrefix+"/guard-demo", nil)
+		req := httptest.NewRequest(http.MethodGet, DefaultSSRDataRoute+"/guard-demo", nil)
 		req.Host = "127.0.0.1:8080"
 		req.Header.Set("Origin", "http://127.0.0.1:8080")
 		router.ServeHTTP(w, req)

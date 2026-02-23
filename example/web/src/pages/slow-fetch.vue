@@ -26,7 +26,7 @@ const { t } = useLocaleText()
 
 const fetchPath = computed(() => {
   const fullPath = route.fullPath.split('#')[0]
-  return `/__ssr_fetch${fullPath}`
+  return `/_ssr/data${fullPath}`
 })
 
 const fetchCurl = computed(() => {

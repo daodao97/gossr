@@ -36,7 +36,7 @@ async function resolveAuthFromRoute(path: string): Promise<boolean> {
     return false
 
   const url = new URL(path, window.location.origin)
-  const endpoint = `/__ssr_fetch${url.pathname}${url.search}`
+  const endpoint = `/_ssr/data${url.pathname}${url.search}`
   const response = await fetch(endpoint, {
     credentials: 'same-origin',
     headers: {
