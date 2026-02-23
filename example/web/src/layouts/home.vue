@@ -15,6 +15,7 @@ const baseLinks: { labelKey: MessageKey, to: string }[] = [
   { labelKey: 'layout.nav.hiVue', to: '/hi/vue?title=Ms.' },
   { labelKey: 'layout.nav.seo', to: '/seo-demo?title=SSR%20SEO%20Title' },
   { labelKey: 'layout.nav.session', to: '/session-demo' },
+  { labelKey: 'layout.nav.protected', to: '/protected' },
   { labelKey: 'layout.nav.slow', to: '/slow-ssr' },
   { labelKey: 'layout.nav.noFetch', to: '/no-ssr-fetch' },
   { labelKey: 'layout.nav.notFound', to: '/404' },
@@ -26,11 +27,13 @@ interface LocaleState {
 }
 
 const localeState = computed(() => parseLocaleState(route.path))
+const currentNormalizedPath = computed(() => stripLocalePrefix(route.path))
 const links = computed(() => {
   return baseLinks.map(link => ({
     ...link,
     to: localizeMenuTarget(link.to, localeState.value),
     label: t(link.labelKey),
+    active: stripLocalePrefix(new URL(link.to, 'http://ssr.local').pathname) === currentNormalizedPath.value,
   }))
 })
 
@@ -105,7 +108,14 @@ function switchLocaleTarget(rawTarget: string, locale: SupportedLocale): string 
     </nav>
 
     <nav class="links">
-      <RouterLink v-for="link in links" :key="link.to" :to="link.to">{{ link.label }}</RouterLink>
+      <RouterLink
+        v-for="link in links"
+        :key="link.to"
+        :to="link.to"
+        :class="{ active: link.active }"
+      >
+        {{ link.label }}
+      </RouterLink>
     </nav>
 
     <slot />
@@ -167,5 +177,12 @@ h1 {
 
 .links a:hover {
   text-decoration: underline;
+}
+
+.links a.active {
+  color: #1d4ed8;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 </style>

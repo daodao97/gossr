@@ -61,6 +61,13 @@ declare module 'vue-router/auto-routes' {
       Record<never, never>,
       | never
     >,
+    '/protected': RouteRecordInfo<
+      '/protected',
+      '/protected',
+      Record<never, never>,
+      Record<never, never>,
+      | never
+    >,
     '/seo-demo': RouteRecordInfo<
       '/seo-demo',
       '/seo-demo',
@@ -122,6 +129,12 @@ declare module 'vue-router/auto-routes' {
     'src/pages/no-ssr-fetch.vue': {
       routes:
         | '/no-ssr-fetch'
+      views:
+        | never
+    }
+    'src/pages/protected.vue': {
+      routes:
+        | '/protected'
       views:
         | never
     }

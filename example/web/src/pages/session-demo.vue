@@ -38,7 +38,12 @@ const route = useRoute()
 const { t } = useLocaleText()
 const user = computed(() => payload.value.session?.user)
 const isLoggedIn = computed(() => !!user.value?.email)
-const nextPath = computed(() => route.path || '/session-demo')
+const nextPath = computed(() => {
+  const next = route.query.next
+  if (typeof next === 'string' && next.startsWith('/') && !next.startsWith('//'))
+    return next
+  return route.path || '/session-demo'
+})
 const loginURL = computed(() => `/demo/session/login?next=${encodeURIComponent(nextPath.value)}`)
 const logoutURL = computed(() => `/demo/session/logout?next=${encodeURIComponent(nextPath.value)}`)
 </script>
@@ -48,6 +53,7 @@ const logoutURL = computed(() => `/demo/session/logout?next=${encodeURIComponent
     <h2>{{ t('page.session.title') }}</h2>
     <p><strong>{{ t('common.field.message') }}:</strong> {{ payload.message ?? t('common.empty') }}</p>
     <p><strong>{{ t('common.field.path') }}:</strong> {{ payload.path ?? '-' }}</p>
+    <p v-if="nextPath !== route.path"><strong>{{ t('common.field.next') }}:</strong> {{ nextPath }}</p>
 
     <p v-if="isLoggedIn"><strong>{{ t('common.field.status') }}:</strong> {{ t('page.session.loggedIn') }}</p>
     <p v-else><strong>{{ t('common.field.status') }}:</strong> {{ t('page.session.loggedOut') }}</p>
