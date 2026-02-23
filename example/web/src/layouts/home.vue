@@ -17,6 +17,7 @@ const baseLinks: { labelKey: MessageKey, to: string }[] = [
   { labelKey: 'layout.nav.session', to: '/session-demo' },
   { labelKey: 'layout.nav.protected', to: '/protected' },
   { labelKey: 'layout.nav.slow', to: '/slow-ssr' },
+  { labelKey: 'layout.nav.slowFetch', to: '/slow-fetch' },
   { labelKey: 'layout.nav.noFetch', to: '/no-ssr-fetch' },
   { labelKey: 'layout.nav.notFound', to: '/404' },
 ]
@@ -129,6 +130,7 @@ function parsePathTarget(rawTarget: string): ParsedPathTarget {
 
 <template>
   <main class="page">
+    <img class="brand-image" src="/logo.webp" alt="gossr logo">
     <h1>{{ t('layout.title') }}</h1>
     <p class="subtitle">{{ t('layout.subtitle') }}</p>
 
@@ -167,14 +169,24 @@ function parsePathTarget(rawTarget: string): ParsedPathTarget {
   color: #111827;
 }
 
+.brand-image {
+  display: block;
+  width: 120px;
+  height: 120px;
+  margin: 0 auto 12px;
+  object-fit: cover;
+}
+
 h1 {
   margin: 0 0 8px;
   font-size: 32px;
+  text-align: center;
 }
 
 .subtitle {
   margin: 0 0 24px;
   color: #4b5563;
+  text-align: center;
 }
 
 .locale-switch {

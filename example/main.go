@@ -41,6 +41,7 @@ func init() {
 	registerLocalizedSSRRoute("/seo-demo", seoDemoPayload)
 	registerLocalizedSSRRoute("/session-demo", sessionDemoPayload)
 	registerLocalizedSSRRoute("/slow-ssr", slowSSRPayload)
+	registerLocalizedSSRRoute("/slow-fetch", slowFetchPayload)
 }
 
 func homePayload(c *gin.Context) (gossr.SSRPayload, error) {
@@ -95,6 +96,23 @@ func slowSSRPayload(c *gin.Context) (gossr.SSRPayload, error) {
 		locale,
 		"This route intentionally simulates slow SSR rendering",
 		"该路由会故意模拟慢速 SSR 渲染",
+	)
+	return buildPayload(c, message), nil
+}
+
+func slowFetchPayload(c *gin.Context) (gossr.SSRPayload, error) {
+	// 模拟 __ssr_fetch 慢查询：只延迟数据阶段，不影响 SSR 渲染阶段逻辑。
+	select {
+	case <-time.After(3500 * time.Millisecond):
+	case <-c.Request.Context().Done():
+		return nil, c.Request.Context().Err()
+	}
+
+	locale := localeFromRequestPath(c.Request.URL.Path)
+	message := localizedText(
+		locale,
+		"This route intentionally simulates slow __ssr_fetch payload",
+		"该路由会故意模拟慢速 __ssr_fetch 数据",
 	)
 	return buildPayload(c, message), nil
 }

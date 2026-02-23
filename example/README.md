@@ -112,6 +112,8 @@ docker compose down
   - `/demo/session/logout?next=/session-demo`
 - SSR 超时 fallback：
   - `/slow-ssr`
+- `__ssr_fetch` 慢数据示例：
+  - `/slow-fetch`
 
 ## 示例覆盖能力
 
@@ -141,6 +143,13 @@ docker compose down
 - 前端 SSR 入口对该路由故意延迟 `3.5s`
 - 超过默认 `3s` 渲染超时后，服务端返回 fallback 页面
 - 响应中会注入 `meta[name="ssr-error-id"]`，客户端接管后可读取该标识
+
+### 5) `__ssr_fetch` 慢数据
+
+- 路由：`/slow-fetch`
+- 后端 `__ssr_fetch` handler 对该路由故意延迟 `3.5s`
+- 用于演示“数据阶段慢”，不是“SSR 渲染阶段慢”
+- 该路由不应产生 `ssr-error-id` fallback（除非同时触发了其他渲染异常）
 
 ## `/__ssr_fetch` 调试方式
 

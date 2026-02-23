@@ -8,6 +8,7 @@
   "layout.nav.session": "Session demo",
   "layout.nav.protected": "Protected",
   "layout.nav.slow": "Slow SSR fallback",
+  "layout.nav.slowFetch": "Slow __ssr_fetch",
   "layout.nav.noFetch": "No SSR fetch",
   "layout.nav.notFound": "404",
   "layout.notFound.eyebrow": "gossr + Vue SSR minimal",
@@ -48,6 +49,11 @@
   "page.slow.desc1": "This route intentionally waits 3.5s on server side, exceeding gossr default 3s SSR timeout.",
   "page.slow.desc2": "Open this URL in a new tab to observe fallback first, then client-side recovery.",
   "page.slow.openCurrent": "Open {path} in new tab",
+  "page.slowFetch.title": "Slow __ssr_fetch Demo",
+  "page.slowFetch.desc1": "This route intentionally waits 3.5s in backend __ssr_fetch handler.",
+  "page.slowFetch.desc2": "It simulates slow payload fetching. Unlike /slow-ssr, it should not trigger SSR timeout fallback.",
+  "page.slowFetch.fetchPath": "__ssr_fetch path",
+  "page.slowFetch.tip": "Use this command to observe fetch latency directly:",
   "page.notFound.title": "404 Not Found",
   "page.notFound.desc": "Page does not exist. Please check the URL."
 }

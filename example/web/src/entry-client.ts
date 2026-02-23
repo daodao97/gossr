@@ -22,8 +22,11 @@ const hasInitialSsrPayload = !!ssrPayload && Object.keys(ssrPayload).length > 0
 const initialState = ssrPayload ?? {}
 const { app, router, ssrContext, i18n } = makeApp(initialState)
 const SSR_FETCH_TIMEOUT_MS = 5000
-const persistentSsrKeys = new Set(['session', 'locale', 'siteOrigin'])
+const persistentSsrKeys = new Set(['session', 'locale', 'siteOrigin', '__ssrFetchLoading'])
 const localeRef = getLocaleRef(i18n)
+let activeSsrFetchCount = 0
+
+setSsrFetchLoading(false)
 
 if (typeof window !== 'undefined') {
   const savedLocale = window.localStorage.getItem('locale')
@@ -89,6 +92,7 @@ router.beforeResolve((to, from) => {
   clearRouteSsrState()
 
   const fetchId = ++latestSsrFetchId
+  startSsrFetchLoading()
   void fetchSsrData(to.fullPath)
     .then((data) => {
       // Ignore outdated responses from older navigations.
@@ -102,6 +106,9 @@ router.beforeResolve((to, from) => {
         return
 
       console.error('Failed to fetch SSR data', error)
+    })
+    .finally(() => {
+      stopSsrFetchLoading()
     })
 
   return true
@@ -154,12 +161,16 @@ async function fetchSsrData(path: string, timeoutMs = SSR_FETCH_TIMEOUT_MS): Pro
 }
 
 async function fetchInitialSsrData(path: string): Promise<void> {
+  startSsrFetchLoading()
   try {
     const initialData = await fetchSsrData(path)
     replaceRouteSsrState(initialData)
   }
   catch (error) {
     console.error('Failed to fetch initial SSR data', error)
+  }
+  finally {
+    stopSsrFetchLoading()
   }
 }
 
@@ -196,4 +207,25 @@ function shouldHydrateApp(): boolean {
 
 function shouldFetchSsrDataForRoute(route: { meta: { ssrData?: boolean } }): boolean {
   return route.meta.ssrData !== false
+}
+
+function setSsrFetchLoading(loading: boolean) {
+  ssrContext.setState({
+    ...ssrContext.state.value,
+    __ssrFetchLoading: loading,
+  })
+}
+
+function startSsrFetchLoading() {
+  activeSsrFetchCount += 1
+  if (activeSsrFetchCount === 1)
+    setSsrFetchLoading(true)
+}
+
+function stopSsrFetchLoading() {
+  if (activeSsrFetchCount > 0)
+    activeSsrFetchCount -= 1
+
+  if (activeSsrFetchCount === 0)
+    setSsrFetchLoading(false)
 }

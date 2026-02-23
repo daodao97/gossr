@@ -8,6 +8,7 @@
   "layout.nav.session": "Session 示例",
   "layout.nav.protected": "登录保护",
   "layout.nav.slow": "慢 SSR 回退",
+  "layout.nav.slowFetch": "慢 __ssr_fetch",
   "layout.nav.noFetch": "无需 SSR fetch",
   "layout.nav.notFound": "404",
   "layout.notFound.eyebrow": "gossr + Vue SSR 极简示例",
@@ -48,6 +49,11 @@
   "page.slow.desc1": "该路由会在服务端故意延迟 3.5 秒，超过 gossr 默认 3 秒 SSR 超时。",
   "page.slow.desc2": "可在新标签打开当前地址，先观察 fallback 页面，再由客户端恢复渲染。",
   "page.slow.openCurrent": "在新标签打开 {path}",
+  "page.slowFetch.title": "慢 __ssr_fetch 示例",
+  "page.slowFetch.desc1": "该路由会在后端 __ssr_fetch 处理阶段故意延迟 3.5 秒。",
+  "page.slowFetch.desc2": "它用于模拟数据获取慢。与 /slow-ssr 不同，它不应触发 SSR 渲染超时 fallback。",
+  "page.slowFetch.fetchPath": "__ssr_fetch 路径",
+  "page.slowFetch.tip": "可使用下面命令直接观察 fetch 延迟：",
   "page.notFound.title": "404 页面不存在",
   "page.notFound.desc": "页面不存在，请检查地址是否正确。"
 }

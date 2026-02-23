@@ -82,6 +82,13 @@ declare module 'vue-router/auto-routes' {
       Record<never, never>,
       | never
     >,
+    '/slow-fetch': RouteRecordInfo<
+      '/slow-fetch',
+      '/slow-fetch',
+      Record<never, never>,
+      Record<never, never>,
+      | never
+    >,
     '/slow-ssr': RouteRecordInfo<
       '/slow-ssr',
       '/slow-ssr',
@@ -147,6 +154,12 @@ declare module 'vue-router/auto-routes' {
     'src/pages/session-demo.vue': {
       routes:
         | '/session-demo'
+      views:
+        | never
+    }
+    'src/pages/slow-fetch.vue': {
+      routes:
+        | '/slow-fetch'
       views:
         | never
     }
