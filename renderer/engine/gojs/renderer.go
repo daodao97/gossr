@@ -32,7 +32,7 @@ func (r *Renderer) Render(ctx context.Context, urlPath string, payload map[strin
 		ctx = context.Background()
 	}
 
-	rt, err := r.pool.Get()
+	rt, err := r.pool.Get(ctx)
 	if err != nil {
 		return renderer.Result{}, err
 	}
@@ -49,7 +49,13 @@ func (r *Renderer) Render(ctx context.Context, urlPath string, payload map[strin
 	}()
 
 	defer close(stopWatch)
-	defer r.pool.Put(rt)
+	defer func() {
+		if interrupted.Load() {
+			r.pool.Discard(rt)
+			return
+		}
+		r.pool.Put(rt)
+	}()
 
 	// 注入 SSR 数据
 	_ = rt.Set("__SSR_HEAD__", goja.Undefined())

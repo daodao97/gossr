@@ -159,7 +159,7 @@ func RunBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher Backen
 
 			reqID := fmt.Sprintf("%d", time.Now().UnixNano())
 
-			result, err := renderWithTimeout(ssr, c.Request.URL.Path, payloadMap, 3*time.Second, renderSem)
+			result, err := renderWithTimeout(c.Request.Context(), ssr, c.Request.URL.Path, payloadMap, 3*time.Second, renderSem)
 			if err != nil {
 				log.Printf("ssr render failed id=%s path=%s err=%v", reqID, c.Request.URL.Path, err)
 
@@ -419,7 +419,7 @@ func newDevProxy(rawURL string) *httputil.ReverseProxy {
 	return proxy
 }
 
-func renderWithTimeout(ssr renderer.Renderer, urlPath string, payload map[string]any, timeout time.Duration, sem chan struct{}) (result renderer.Result, err error) {
+func renderWithTimeout(parentCtx context.Context, ssr renderer.Renderer, urlPath string, payload map[string]any, timeout time.Duration, sem chan struct{}) (result renderer.Result, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			result = renderer.Result{}
@@ -427,11 +427,15 @@ func renderWithTimeout(ssr renderer.Renderer, urlPath string, payload map[string
 		}
 	}()
 
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+
 	if timeout <= 0 {
 		timeout = 3 * time.Second
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parentCtx, timeout)
 	defer cancel()
 
 	if sem != nil {
@@ -439,7 +443,10 @@ func renderWithTimeout(ssr renderer.Renderer, urlPath string, payload map[string
 		case sem <- struct{}{}:
 			defer func() { <-sem }()
 		case <-ctx.Done():
-			return renderer.Result{}, fmt.Errorf("render timeout after %s", timeout)
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return renderer.Result{}, fmt.Errorf("render timeout after %s", timeout)
+			}
+			return renderer.Result{}, ctx.Err()
 		}
 	}
 
@@ -461,9 +468,7 @@ func renderConcurrencyLimit() int {
 
 func prewarmRenderer(ssr renderer.Renderer) {
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_, _ = ssr.Render(ctx, "/", nil)
+		_, _ = renderWithTimeout(context.Background(), ssr, "/", nil, 2*time.Second, nil)
 	}()
 }
 

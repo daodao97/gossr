@@ -34,7 +34,7 @@ func TestRenderWithTimeoutReleasesSemaphoreAfterTimeout(t *testing.T) {
 		}
 	})
 
-	_, err := renderWithTimeout(slowRenderer, "/", nil, 15*time.Millisecond, sem)
+	_, err := renderWithTimeout(context.Background(), slowRenderer, "/", nil, 15*time.Millisecond, sem)
 	if err == nil || !strings.Contains(err.Error(), "render timeout") {
 		t.Fatalf("expected timeout error, got %v", err)
 	}
@@ -45,7 +45,7 @@ func TestRenderWithTimeoutReleasesSemaphoreAfterTimeout(t *testing.T) {
 		return renderer.Result{HTML: "ok"}, nil
 	})
 
-	result, err := renderWithTimeout(fastRenderer, "/", nil, 200*time.Millisecond, sem)
+	result, err := renderWithTimeout(context.Background(), fastRenderer, "/", nil, 200*time.Millisecond, sem)
 	if err != nil {
 		t.Fatalf("expected render to succeed after timeout, got %v", err)
 	}
@@ -64,7 +64,7 @@ func TestRenderWithTimeoutDoesNotRunAfterSemaphoreWaitTimeout(t *testing.T) {
 		return renderer.Result{HTML: "late"}, nil
 	})
 
-	_, err := renderWithTimeout(rendererFn, "/", nil, 20*time.Millisecond, sem)
+	_, err := renderWithTimeout(context.Background(), rendererFn, "/", nil, 20*time.Millisecond, sem)
 	if err == nil || !strings.Contains(err.Error(), "render timeout") {
 		t.Fatalf("expected timeout error while waiting semaphore, got %v", err)
 	}
@@ -263,6 +263,7 @@ func TestWrapSSRMaskHandlerErrorByDefault(t *testing.T) {
 func TestWrapSSRCanExposeHandlerError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("SSR_EXPOSE_HANDLER_ERROR", "1")
+	t.Setenv("DEV_MODE", "1")
 
 	router := gin.New()
 	router.GET("/boom", WrapSSR(func(*gin.Context) (SSRPayload, error) {
@@ -284,6 +285,34 @@ func TestWrapSSRCanExposeHandlerError(t *testing.T) {
 
 	if got, _ := body["error"].(string); got != "db: secret leaked" {
 		t.Fatalf("expected original error, got %#v", body["error"])
+	}
+}
+
+func TestWrapSSRDoesNotExposeHandlerErrorOutsideDevMode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("SSR_EXPOSE_HANDLER_ERROR", "1")
+	t.Setenv("DEV_MODE", "")
+
+	router := gin.New()
+	router.GET("/boom", WrapSSR(func(*gin.Context) (SSRPayload, error) {
+		return nil, errors.New("db: secret leaked")
+	}))
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/boom", nil)
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+
+	if got, _ := body["error"].(string); got != "internal server error" {
+		t.Fatalf("expected masked error in non-dev mode, got %#v", body["error"])
 	}
 }
 

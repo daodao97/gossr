@@ -29,6 +29,8 @@ type V8IsolatePool struct {
 	currentSize      int
 	mu               sync.Mutex
 	timeout          time.Duration
+	closed           bool
+	done             chan struct{}
 }
 
 // NewV8IsolatePool 创建预热的 V8 isolate 池
@@ -58,6 +60,7 @@ func NewV8IsolatePool(ssrScriptContents string, ssrScriptName string) *V8Isolate
 		ssrScriptName:    ssrScriptName,
 		maxSize:          poolSize,
 		timeout:          timeout,
+		done:             make(chan struct{}),
 	}
 
 	// 预热：启动时创建一半的 isolate
@@ -101,8 +104,18 @@ func (p *V8IsolatePool) createIsolate() *V8IsolateContainer {
 	}
 }
 
-// Get 从池中获取 isolate，支持超时和动态创建
-func (p *V8IsolatePool) Get() (*V8IsolateContainer, error) {
+// Get 从池中获取 isolate，支持超时、上下文取消和动态创建。
+func (p *V8IsolatePool) Get(ctx context.Context) (*V8IsolateContainer, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	select {
+	case <-p.done:
+		return nil, fmt.Errorf("v8 isolate pool is closed")
+	default:
+	}
+
 	// 先尝试非阻塞获取
 	select {
 	case container := <-p.pool:
@@ -112,6 +125,10 @@ func (p *V8IsolatePool) Get() (*V8IsolateContainer, error) {
 
 	// 尝试动态创建新的 isolate
 	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil, fmt.Errorf("v8 isolate pool is closed")
+	}
 	if p.currentSize < p.maxSize {
 		p.currentSize++
 		p.mu.Unlock()
@@ -119,14 +136,22 @@ func (p *V8IsolatePool) Get() (*V8IsolateContainer, error) {
 	}
 	p.mu.Unlock()
 
-	// 等待可用的 isolate，带超时
-	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
+	waitCtx := ctx
+	cancel := func() {}
+	if p.timeout > 0 {
+		waitCtx, cancel = context.WithTimeout(ctx, p.timeout)
+	}
 	defer cancel()
 
 	select {
+	case <-p.done:
+		return nil, fmt.Errorf("v8 isolate pool is closed")
 	case container := <-p.pool:
 		return container, nil
-	case <-ctx.Done():
+	case <-waitCtx.Done():
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, fmt.Errorf("v8 pool timeout after %v", p.timeout)
 	}
 }
@@ -136,12 +161,27 @@ func (p *V8IsolatePool) Put(container *V8IsolateContainer) {
 	if container == nil {
 		return
 	}
+
+	p.mu.Lock()
+	if p.closed {
+		if p.currentSize > 0 {
+			p.currentSize--
+		}
+		p.mu.Unlock()
+		container.Isolate.Dispose()
+		return
+	}
+
 	select {
 	case p.pool <- container:
-		// 成功归还
+		p.mu.Unlock()
 	default:
 		// 池满，释放多余的 isolate
-		p.Discard(container)
+		if p.currentSize > 0 {
+			p.currentSize--
+		}
+		p.mu.Unlock()
+		container.Isolate.Dispose()
 	}
 }
 
@@ -152,15 +192,40 @@ func (p *V8IsolatePool) Discard(container *V8IsolateContainer) {
 	}
 
 	p.mu.Lock()
-	p.currentSize--
+	if p.currentSize > 0 {
+		p.currentSize--
+	}
 	p.mu.Unlock()
 	container.Isolate.Dispose()
 }
 
 // Close 关闭池并释放所有资源
 func (p *V8IsolatePool) Close() {
-	close(p.pool)
-	for container := range p.pool {
-		container.Isolate.Dispose()
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
+	p.closed = true
+	close(p.done)
+
+	containers := make([]*V8IsolateContainer, 0, len(p.pool))
+	for {
+		select {
+		case container := <-p.pool:
+			if container != nil {
+				containers = append(containers, container)
+			}
+		default:
+			p.currentSize -= len(containers)
+			if p.currentSize < 0 {
+				p.currentSize = 0
+			}
+			p.mu.Unlock()
+			for _, container := range containers {
+				container.Isolate.Dispose()
+			}
+			return
+		}
 	}
 }

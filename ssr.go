@@ -55,6 +55,10 @@ func WrapSSR(h func(*gin.Context) (SSRPayload, error)) gin.HandlerFunc {
 }
 
 func exposeSSRErrors() bool {
+	if !isDevMode() {
+		return false
+	}
+
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("SSR_EXPOSE_HANDLER_ERROR"))) {
 	case "1", "true", "yes", "on":
 		return true

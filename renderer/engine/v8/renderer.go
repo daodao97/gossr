@@ -34,7 +34,7 @@ func (r *Renderer) Render(ctx context.Context, urlPath string, payload map[strin
 		ctx = context.Background()
 	}
 
-	iso, err := r.pool.Get()
+	iso, err := r.pool.Get(ctx)
 	if err != nil {
 		return renderer.Result{}, err
 	}
