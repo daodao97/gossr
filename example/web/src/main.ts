@@ -41,7 +41,6 @@ async function resolveAuthFromRoute(path: string): Promise<boolean> {
     credentials: 'same-origin',
     headers: {
       'Accept': 'application/json',
-      'X-SSR-Fetch': '1',
     },
   })
 

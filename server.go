@@ -40,9 +40,43 @@ type BackendDataFetcher func(context.Context, *http.Request) (SSRPayload, error)
 // 返回的 map 会直接注入 payload.session。
 type SessionTokenParser func(token string) (map[string]any, error)
 
-const DefaultSSRDataRoute = "/_ssr/data"
+const (
+	DefaultSSRDataRoute = "/_ssr/data"
+	maxSSRRenderLimit   = 1024
+	cacheNoStoreHTML    = "no-cache, no-store, must-revalidate"
+	cacheImmutableAsset = "public, max-age=31536000, immutable"
+	cacheShortRootFile  = "public, max-age=86400"
+)
 
-var langAttributePattern = regexp.MustCompile(`lang="[^"]*"`)
+var (
+	langAttributePattern = regexp.MustCompile(`lang="[^"]*"`)
+	staticAssetExts      = map[string]struct{}{
+		".avif":        {},
+		".br":          {},
+		".css":         {},
+		".eot":         {},
+		".gif":         {},
+		".gz":          {},
+		".ico":         {},
+		".jpeg":        {},
+		".jpg":         {},
+		".js":          {},
+		".map":         {},
+		".mjs":         {},
+		".otf":         {},
+		".pdf":         {},
+		".png":         {},
+		".svg":         {},
+		".ttf":         {},
+		".txt":         {},
+		".webmanifest": {},
+		".webp":        {},
+		".wasm":        {},
+		".woff":        {},
+		".woff2":       {},
+		".xml":         {},
+	}
+)
 
 var (
 	sessionTokenParserMu sync.RWMutex
@@ -100,13 +134,13 @@ func RunBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher Backen
 	} else {
 		indexBytes, err := readFSFile(frontendBuild.FrontendDist, "index.html")
 		if err != nil {
-			log.Fatalf("failed to read index.html: %v", err)
+			panic(fmt.Errorf("failed to read index.html: %w", err))
 		}
 		indexHTML = string(indexBytes)
 
 		serverEntry, err := readFSFile(frontendBuild.ServerDist, "server.js")
 		if err != nil {
-			log.Fatalf("failed to read server.js: %v", err)
+			panic(fmt.Errorf("failed to read server.js: %w", err))
 		}
 		ssr = newRendererFromEnv(string(serverEntry))
 		prewarmRenderer(ssr)
@@ -118,11 +152,11 @@ func RunBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher Backen
 
 		assetsFS, err := fs.Sub(frontendBuild.FrontendDist, "assets")
 		if err != nil {
-			log.Fatalf("failed to prepare assets filesystem: %v", err)
+			panic(fmt.Errorf("failed to prepare assets filesystem: %w", err))
 		}
 
 		// /assets 目录使用长期缓存（文件名带 hash）
-		router.Group("/assets", cacheControlMiddleware("public, max-age=31536000, immutable")).
+		router.Group("/assets", cacheControlMiddleware(cacheImmutableAsset)).
 			StaticFS("/", http.FS(assetsFS))
 
 		// 根目录静态文件使用短期缓存
@@ -164,6 +198,7 @@ func RunBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher Backen
 				log.Printf("ssr render failed id=%s path=%s err=%v", reqID, c.Request.URL.Path, err)
 
 				fallback := buildFallbackPage(indexHTML, payloadMap, locale, reqID)
+				setHTMLNoCacheHeaders(c)
 				c.Header("Content-Type", "text/html")
 				c.String(http.StatusOK, fallback)
 				return
@@ -179,6 +214,7 @@ func RunBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher Backen
 				log.Println(injectErr)
 			}
 
+			setHTMLNoCacheHeaders(c)
 			c.Header("Content-Type", "text/html")
 			c.String(http.StatusOK, page)
 		})
@@ -256,7 +292,15 @@ func payloadToMap(payload SSRPayload) map[string]any {
 	return map[string]any{}
 }
 
+func enrichPayloadForSSRFetchResponse(payload map[string]any, req *http.Request) map[string]any {
+	return enrichPayloadWithRequestContext(payload, req, false)
+}
+
 func enrichPayloadFromRequest(payload map[string]any, req *http.Request) map[string]any {
+	return enrichPayloadWithRequestContext(payload, req, true)
+}
+
+func enrichPayloadWithRequestContext(payload map[string]any, req *http.Request, includeSession bool) map[string]any {
 	enriched := make(map[string]any, len(payload)+3)
 	for k, v := range payload {
 		enriched[k] = v
@@ -266,8 +310,10 @@ func enrichPayloadFromRequest(payload map[string]any, req *http.Request) map[str
 		return enriched
 	}
 
-	if session := sessionStateFromRequest(req); session != nil {
-		enriched["session"] = session
+	if includeSession {
+		if session := sessionStateFromRequest(req); session != nil {
+			enriched["session"] = session
+		}
 	}
 
 	if locale := localeFromPath(req.URL.Path); locale != "" {
@@ -298,6 +344,13 @@ func sessionStateFromRequest(r *http.Request) map[string]any {
 	parser := getSessionTokenParser()
 	session, err := parser(cookie.Value)
 	if err != nil || session == nil {
+		if err != nil {
+			reqPath := ""
+			if r.URL != nil {
+				reqPath = r.URL.Path
+			}
+			log.Printf("invalid session_token cookie ignored: path=%s token_len=%d err=%v", reqPath, len(cookie.Value), err)
+		}
 		return nil
 	}
 
@@ -367,7 +420,7 @@ func localeFromPath(p string) string {
 }
 
 func requestOrigin(r *http.Request) string {
-	host := r.Host
+	host := primaryHost(r)
 	if host == "" {
 		return ""
 	}
@@ -377,19 +430,69 @@ func requestOrigin(r *http.Request) string {
 		scheme = "https"
 	}
 
-	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
-		parts := strings.Split(proto, ",")
-		if len(parts) > 0 {
-			scheme = strings.TrimSpace(parts[0])
+	if trustForwardedHeaders() {
+		if proto := firstForwardedValue(r.Header.Get("X-Forwarded-Proto")); proto != "" {
+			scheme = proto
+		}
+
+		if forwardedPort := firstForwardedValue(r.Header.Get("X-Forwarded-Port")); forwardedPort != "" && !hostHasExplicitPort(host) {
+			if _, err := strconv.Atoi(forwardedPort); err == nil {
+				host += ":" + forwardedPort
+			}
 		}
 	}
 
 	return fmt.Sprintf("%s://%s", scheme, host)
 }
 
+func primaryHost(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+
+	host := strings.TrimSpace(r.Host)
+	if trustForwardedHeaders() {
+		if forwardedHost := firstForwardedValue(r.Header.Get("X-Forwarded-Host")); forwardedHost != "" {
+			host = forwardedHost
+		}
+	}
+
+	return host
+}
+
+func firstForwardedValue(raw string) string {
+	parts := strings.Split(raw, ",")
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(parts[0])
+}
+
+func hostHasExplicitPort(host string) bool {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return false
+	}
+
+	if strings.HasPrefix(host, "[") {
+		return strings.Contains(host, "]:")
+	}
+
+	return strings.Count(host, ":") == 1
+}
+
 func isDevMode() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("DEV_MODE"))) {
 	case "1", "true", "yes", "on", "dev":
+		return true
+	default:
+		return false
+	}
+}
+
+func trustForwardedHeaders() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("TRUST_FORWARDED_HEADERS"))) {
+	case "1", "true", "yes", "on":
 		return true
 	default:
 		return false
@@ -407,7 +510,7 @@ func devServerURL() string {
 func newDevProxy(rawURL string) *httputil.ReverseProxy {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		log.Fatalf("invalid DEV_SERVER_URL %q: %v", rawURL, err)
+		panic(fmt.Errorf("invalid DEV_SERVER_URL %q: %w", rawURL, err))
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(parsed)
@@ -458,12 +561,29 @@ func renderWithTimeout(parentCtx context.Context, ssr renderer.Renderer, urlPath
 }
 
 func renderConcurrencyLimit() int {
+	defaultLimit := runtime.GOMAXPROCS(0)
+
 	if raw := strings.TrimSpace(os.Getenv("SSR_RENDER_LIMIT")); raw != "" {
-		if v, err := strconv.Atoi(raw); err == nil && v >= 0 {
-			return v
+		v, err := strconv.Atoi(raw)
+		if err != nil || v < 0 {
+			log.Printf("config: invalid SSR_RENDER_LIMIT=%q, fallback to %d", raw, defaultLimit)
+			return defaultLimit
 		}
+
+		if v == 0 {
+			log.Printf("config: SSR_RENDER_LIMIT=0 (unlimited)")
+			return 0
+		}
+
+		if v > maxSSRRenderLimit {
+			log.Printf("config: SSR_RENDER_LIMIT=%d exceeds max %d, clamped", v, maxSSRRenderLimit)
+			return maxSSRRenderLimit
+		}
+
+		return v
 	}
-	return runtime.GOMAXPROCS(0)
+
+	return defaultLimit
 }
 
 func prewarmRenderer(ssr renderer.Renderer) {
@@ -524,7 +644,7 @@ func registerRootStaticFiles(router *gin.Engine, frontendDist fs.FS) {
 		// 根目录文件（favicon, logo 等）使用短期缓存
 		router.GET("/"+name, func(fileName string) gin.HandlerFunc {
 			return func(c *gin.Context) {
-				c.Header("Cache-Control", "public, max-age=86400")
+				c.Header("Cache-Control", cacheShortRootFile)
 				c.FileFromFS(fileName, http.FS(frontendDist))
 			}
 		}(name))
@@ -542,7 +662,13 @@ func isStaticAssetLikePath(rawPath string) bool {
 		return false
 	}
 
-	return path.Ext(base) != ""
+	ext := strings.ToLower(path.Ext(base))
+	if ext == "" {
+		return false
+	}
+
+	_, ok := staticAssetExts[ext]
+	return ok
 }
 
 func cacheControlMiddleware(value string) gin.HandlerFunc {
@@ -550,6 +676,12 @@ func cacheControlMiddleware(value string) gin.HandlerFunc {
 		c.Header("Cache-Control", value)
 		c.Next()
 	}
+}
+
+func setHTMLNoCacheHeaders(c *gin.Context) {
+	c.Header("Cache-Control", cacheNoStoreHTML)
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
 }
 
 func buildFallbackPage(indexHTML string, payload map[string]any, locale string, reqID string) string {

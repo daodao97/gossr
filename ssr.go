@@ -70,19 +70,7 @@ func exposeSSRErrors() bool {
 // Router 挂载 SSR 路由到外部 gin group（供客户端 fetch 调用）
 func Router(group *gin.RouterGroup) {
 	group.GET("/*path", func(c *gin.Context) {
-		ssrPath := c.Param("path")
-		if ssrPath == "" {
-			ssrPath = "/"
-		}
-
-		w := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, ssrPath+"?"+c.Request.URL.RawQuery, nil)
-		req = req.WithContext(c.Request.Context())
-		req.Header = c.Request.Header.Clone()
-		req.Host = c.Request.Host
-		req.TLS = c.Request.TLS
-		req.RemoteAddr = c.Request.RemoteAddr
-		SsrEngine.ServeHTTP(w, req)
+		w, req := callSsrEngine(c.Request.Context(), c.Request, c.Param("path"), c.Request.URL.RawQuery)
 
 		if w.Code != http.StatusOK {
 			c.Data(w.Code, "application/json", w.Body.Bytes())
@@ -95,37 +83,20 @@ func Router(group *gin.RouterGroup) {
 			return
 		}
 
-		c.JSON(http.StatusOK, enrichPayloadFromRequest(data, req))
+		c.JSON(http.StatusOK, enrichPayloadForSSRFetchResponse(data, req))
 	})
 }
 
 // Resolve 服务端内部调用，获取 SSR 数据
 func Resolve(ctx context.Context, rawPath, rawQuery string) (SSRPayload, int, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
 	cleanPath := path.Clean("/" + strings.TrimPrefix(strings.TrimSpace(rawPath), "/"))
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, cleanPath+"?"+rawQuery, nil)
-	req = req.WithContext(ctx)
-	SsrEngine.ServeHTTP(w, req)
-
-	if w.Code == http.StatusNotFound {
-		return nil, http.StatusNotFound, nil
+	w, _ := callSsrEngine(ctx, nil, cleanPath, rawQuery)
+	data, status, err := parseSSRPayloadResponse(w)
+	if err != nil || status != http.StatusOK {
+		return nil, status, err
 	}
 
-	if w.Code != http.StatusOK {
-		return nil, w.Code, fmt.Errorf("ssr handler returned %d", w.Code)
-	}
-
-	var data map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
-		return nil, http.StatusInternalServerError, err
-	}
-
-	return mapPayload(data), http.StatusOK, nil
+	return mapPayload(data), status, nil
 }
 
 func resolveRequest(ctx context.Context, req *http.Request) (SSRPayload, int, error) {
@@ -138,17 +109,40 @@ func resolveRequest(ctx context.Context, req *http.Request) (SSRPayload, int, er
 	}
 
 	cleanPath := path.Clean("/" + strings.TrimPrefix(strings.TrimSpace(req.URL.Path), "/"))
+	w, _ := callSsrEngine(ctx, req, cleanPath, req.URL.RawQuery)
+	data, status, err := parseSSRPayloadResponse(w)
+	if err != nil || status != http.StatusOK {
+		return nil, status, err
+	}
+
+	return mapPayload(data), status, nil
+}
+
+func callSsrEngine(ctx context.Context, sourceReq *http.Request, requestPath, rawQuery string) (*httptest.ResponseRecorder, *http.Request) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	requestPath = strings.TrimSpace(requestPath)
+	if requestPath == "" {
+		requestPath = "/"
+	}
 
 	w := httptest.NewRecorder()
-	internalReq := httptest.NewRequest(http.MethodGet, cleanPath+"?"+req.URL.RawQuery, nil)
-	internalReq = internalReq.WithContext(ctx)
-	internalReq.Header = req.Header.Clone()
-	internalReq.Host = req.Host
-	internalReq.TLS = req.TLS
-	internalReq.RemoteAddr = req.RemoteAddr
+	req := httptest.NewRequest(http.MethodGet, requestPath+"?"+rawQuery, nil)
+	req = req.WithContext(ctx)
+	if sourceReq != nil {
+		req.Header = sourceReq.Header.Clone()
+		req.Host = sourceReq.Host
+		req.TLS = sourceReq.TLS
+		req.RemoteAddr = sourceReq.RemoteAddr
+	}
+	SsrEngine.ServeHTTP(w, req)
 
-	SsrEngine.ServeHTTP(w, internalReq)
+	return w, req
+}
 
+func parseSSRPayloadResponse(w *httptest.ResponseRecorder) (map[string]any, int, error) {
 	if w.Code == http.StatusNotFound {
 		return nil, http.StatusNotFound, nil
 	}
@@ -162,7 +156,7 @@ func resolveRequest(ctx context.Context, req *http.Request) (SSRPayload, int, er
 		return nil, http.StatusInternalServerError, err
 	}
 
-	return mapPayload(data), http.StatusOK, nil
+	return data, http.StatusOK, nil
 }
 
 func Ssr(r *gin.Engine, dist embed.FS) error {
@@ -175,9 +169,6 @@ func Ssr(r *gin.Engine, dist embed.FS) error {
 		return err
 	}
 
-	// Add static file cache headers middleware
-	r.Use(staticCacheMiddleware())
-
 	RunBlocking(
 		r,
 		FrontendBuild{
@@ -188,68 +179,6 @@ func Ssr(r *gin.Engine, dist embed.FS) error {
 	)
 
 	return nil
-}
-
-// staticCacheMiddleware adds cache headers for static assets
-func staticCacheMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		path := c.Request.URL.Path
-
-		// Skip non-GET requests
-		if c.Request.Method != "GET" {
-			c.Next()
-			return
-		}
-
-		// Assets with hash in filename (immutable) - cache for 1 year
-		if strings.HasPrefix(path, "/assets/") {
-			c.Header("Cache-Control", "public, max-age=31536000, immutable")
-			c.Next()
-			return
-		}
-
-		// Compressed files (.gz, .br)
-		if strings.HasSuffix(path, ".gz") || strings.HasSuffix(path, ".br") {
-			c.Header("Cache-Control", "public, max-age=31536000, immutable")
-			c.Next()
-			return
-		}
-
-		// Fonts - cache for 1 year
-		if strings.HasSuffix(path, ".woff") || strings.HasSuffix(path, ".woff2") ||
-			strings.HasSuffix(path, ".ttf") || strings.HasSuffix(path, ".otf") ||
-			strings.HasSuffix(path, ".eot") {
-			c.Header("Cache-Control", "public, max-age=31536000, immutable")
-			c.Next()
-			return
-		}
-
-		// Images - cache for 1 week
-		if strings.HasSuffix(path, ".png") || strings.HasSuffix(path, ".jpg") ||
-			strings.HasSuffix(path, ".jpeg") || strings.HasSuffix(path, ".gif") ||
-			strings.HasSuffix(path, ".webp") || strings.HasSuffix(path, ".avif") ||
-			strings.HasSuffix(path, ".ico") {
-			c.Header("Cache-Control", "public, max-age=604800")
-			c.Next()
-			return
-		}
-
-		// SVG files - cache for 1 week
-		if strings.HasSuffix(path, ".svg") {
-			c.Header("Cache-Control", "public, max-age=604800")
-			c.Next()
-			return
-		}
-
-		// HTML pages - no cache (SSR content)
-		if strings.HasSuffix(path, ".html") || !strings.Contains(path, ".") {
-			c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
-			c.Header("Pragma", "no-cache")
-			c.Header("Expires", "0")
-		}
-
-		c.Next()
-	}
 }
 
 func registerSSRFetchRoutes(r *gin.Engine) BackendDataFetcher {
@@ -277,17 +206,8 @@ func ssrGuardMiddleware() gin.HandlerFunc {
 	sharedToken := strings.TrimSpace(os.Getenv("SSR_FETCH_TOKEN"))
 
 	return func(c *gin.Context) {
-		flagHeader := c.GetHeader("X-SSR-Fetch") == "1"
-		originOK := sameOriginRequest(c.Request)
-
-		if sharedToken != "" && c.GetHeader("X-SSR-Token") != sharedToken {
-			c.AbortWithStatus(http.StatusUnauthorized)
-			return
-		}
-
-		// 允许同源请求；若非同源则必须显式标头
-		if !originOK && !flagHeader {
-			c.AbortWithStatus(http.StatusForbidden)
+		if code, ok := authorizeSSRFetch(c.Request, sharedToken); !ok {
+			c.AbortWithStatus(code)
 			return
 		}
 
@@ -295,13 +215,29 @@ func ssrGuardMiddleware() gin.HandlerFunc {
 	}
 }
 
-func sameOriginRequest(r *http.Request) bool {
-	host := r.Host
-	if xf := r.Header.Get("X-Forwarded-Host"); xf != "" {
-		parts := strings.Split(xf, ",")
-		if len(parts) > 0 {
-			host = strings.TrimSpace(parts[0])
+func authorizeSSRFetch(r *http.Request, sharedToken string) (int, bool) {
+	if sharedToken != "" {
+		if r.Header.Get("X-SSR-Token") != sharedToken {
+			return http.StatusUnauthorized, false
 		}
+		return 0, true
+	}
+
+	if sameOriginRequest(r) {
+		return 0, true
+	}
+
+	if allowUnsafeSSRFetchHeaderBypass() && r.Header.Get("X-SSR-Fetch") == "1" {
+		return 0, true
+	}
+
+	return http.StatusForbidden, false
+}
+
+func sameOriginRequest(r *http.Request) bool {
+	host := primaryHost(r)
+	if host == "" {
+		return false
 	}
 
 	origin := r.Header.Get("Origin")
@@ -318,6 +254,15 @@ func sameOriginRequest(r *http.Request) bool {
 	}
 
 	return strings.EqualFold(parsed.Host, host)
+}
+
+func allowUnsafeSSRFetchHeaderBypass() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("SSR_ALLOW_UNSAFE_FETCH_HEADER"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 type mapPayload map[string]any

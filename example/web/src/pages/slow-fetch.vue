@@ -30,7 +30,7 @@ const fetchPath = computed(() => {
 })
 
 const fetchCurl = computed(() => {
-  return `curl -H "X-SSR-Fetch: 1" "http://127.0.0.1:8080${fetchPath.value}"`
+  return `curl -H "Origin: http://127.0.0.1:8080" "http://127.0.0.1:8080${fetchPath.value}"`
 })
 </script>
 

@@ -137,7 +137,6 @@ async function fetchSsrData(path: string, timeoutMs = SSR_FETCH_TIMEOUT_MS): Pro
       signal: controller.signal,
       headers: {
         'Accept': 'application/json',
-        'X-SSR-Fetch': '1',
       },
     })
   }

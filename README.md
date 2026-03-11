@@ -181,7 +181,7 @@ type SSRPayload interface {
 - `Resolve`：服务端内部调用 SSR 数据路由并拿到 payload。
 - `Router`：将内部 `SsrEngine` 路由映射到 `/_ssr/data`。
 - `WrapSSR` 默认会对 `500` 错误做脱敏（返回 `internal server error`）。
-  - 如需调试原始错误，可设置 `SSR_EXPOSE_HANDLER_ERROR=1`。
+  - 如需调试原始错误，可设置 `SSR_EXPOSE_HANDLER_ERROR=1`（仅 `DEV_MODE` 生效）。
 
 ### 自动注入字段
 
@@ -189,7 +189,13 @@ type SSRPayload interface {
 
 - `session`：从 `session_token` cookie 解析后注入（默认 base64 JSON）
 - `locale`：根据 URL 首段推断（默认 `en`，支持 `en`/`zh`）
-- `siteOrigin`：根据请求 host 和协议推断，如 `https://example.com`
+- `siteOrigin`：根据请求 host/proxy 头推断，如 `https://example.com`
+- `/_ssr/data` 外部响应默认不自动附带 `session`，只有 handler 显式返回时才会出现
+
+⚠️ session 安全提示：
+- 默认 `session_token` 解析器仅用于示例（base64 JSON），不做签名和过期校验。
+- 默认解析结果会把 `session_token` 原值透传到 `payload.session`。
+- 生产环境请务必通过 `SetSessionTokenParser` 自定义校验逻辑，并避免把原始 token 注入前端 payload。
 
 可通过 `SetSessionTokenParser` 自定义 `session_token` 的校验与解析逻辑：
 
@@ -197,8 +203,12 @@ type SSRPayload interface {
 gossr.SetSessionTokenParser(func(token string) (map[string]any, error) {
   // 在这里做签名校验、解密或自定义 payload 结构
   return map[string]any{
-    "session_token": token,
-    "user": map[string]any{"email": "demo@example.com"},
+    "user": map[string]any{
+      "id":    "u_demo_1001",
+      "email": "demo@example.com",
+    },
+    // 可选：返回脱敏标记，避免透传原始 token
+    "hasSessionToken": true,
   }, nil
 })
 ```
@@ -219,10 +229,12 @@ gossr.SetSessionTokenParser(func(token string) (map[string]any, error) {
 
 ## `/_ssr/data` 访问保护
 
-- 同源请求：当 `Origin/Referer` 可识别且与 Host 一致时允许访问。
-- 非同源请求：必须带 `X-SSR-Fetch: 1`，否则返回 `403`。
-- 当请求没有 `Origin/Referer` 时，也需要显式带 `X-SSR-Fetch: 1`。
-- 如果设置了 `SSR_FETCH_TOKEN`：请求必须带 `X-SSR-Token: <token>`，否则返回 `401`。
+- 默认按同源规则校验（`Origin`/`Referer` 与请求 Host 一致）。
+- 当设置 `SSR_FETCH_TOKEN` 后，请求必须带 `X-SSR-Token: <token>`，否则返回 `401`。
+- `/_ssr/data` 响应默认只返回业务 payload + 路由上下文（如 `locale/siteOrigin`），不会自动附带 `session`。
+- 默认不允许仅凭 `X-SSR-Fetch: 1` 绕过同源校验。
+- 若需要兼容旧行为，可设置 `SSR_ALLOW_UNSAFE_FETCH_HEADER=1`，允许 `X-SSR-Fetch: 1` 通过（不推荐生产开启）。
+- 默认不信任 `X-Forwarded-*`。若部署环境可保证该头可信，可设置 `TRUST_FORWARDED_HEADERS=1`。
 
 ## 渲染引擎与性能控制
 
@@ -243,11 +255,19 @@ gossr.SetSessionTokenParser(func(token string) (map[string]any, error) {
 - `DEV_SERVER_URL`：dev 代理地址，默认 `http://127.0.0.1:3333`
 - `SSR_ENGINE`：`v8` / `goja`（默认 `v8`，仅默认构建下有效）
 - `SSR_RENDER_LIMIT`：SSR 并发渲染上限
-- `SSR_FETCH_TOKEN`：`/_ssr/data` 共享 token
-- `SSR_EXPOSE_HANDLER_ERROR`：`1/true/yes/on` 时，`WrapSSR` 返回原始 handler 错误文本
+- `SSR_RENDER_LIMIT=0` 表示不限制并发；非法值会回退默认值
+- `SSR_RENDER_LIMIT>1024` 会被 clamp 到 `1024`
+- `SSR_FETCH_TOKEN`：`/_ssr/data` 共享 token（配置后强制校验 `X-SSR-Token`）
+- `SSR_ALLOW_UNSAFE_FETCH_HEADER`：`1/true/yes/on` 时允许 `X-SSR-Fetch: 1` 绕过同源校验（仅兼容用途，默认关闭）
+- `TRUST_FORWARDED_HEADERS`：`1/true/yes/on` 时信任 `X-Forwarded-Host/Proto/Port`（默认关闭）
+- `SSR_EXPOSE_HANDLER_ERROR`：`1/true/yes/on` 时，`WrapSSR` 返回原始 handler 错误文本（仅 `DEV_MODE` 生效）
 - `ENABLE_PPROF`：`1/true/yes/on` 启用 pprof；未设置时 dev 模式默认启用
 - `GOJA_POOL_SIZE` / `GOJA_POOL_TIMEOUT`：goja 池大小与获取超时（默认超时 `5s`）
+  - `GOJA_POOL_SIZE` 会限制在 `[8, 512]`
+  - `GOJA_POOL_TIMEOUT` 负值会按 `0` 处理，最大 `30s`
 - `V8_POOL_SIZE` / `V8_POOL_TIMEOUT`：v8 isolate 池大小与获取超时（默认超时 `5s`）
+  - `V8_POOL_SIZE` 会限制在 `[8, 512]`
+  - `V8_POOL_TIMEOUT` 负值会按 `0` 处理，最大 `30s`
 
 ## 构建与测试
 

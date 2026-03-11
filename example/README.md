@@ -135,7 +135,12 @@ docker compose down
 - 路由：`/session-demo`
 - 登录：`/demo/session/login?next=/session-demo`
 - 登出：`/demo/session/logout?next=/session-demo`
-- `session_token` 会被 gossr 自动解码并注入 `payload.session`
+- 服务端渲染阶段会把 `session_token` 解码后注入 `payload.session`
+- `/_ssr/data` 外部接口默认不自动返回 `session`
+
+⚠️ 安全提示：
+- 这里的 `session_token` 只是示例数据，默认解析器不做签名/过期校验。
+- 生产环境请通过 `SetSessionTokenParser` 自定义校验逻辑，并避免把完整 token 注入前端 payload。
 
 ### 4) SSR 超时与 Fallback
 
@@ -156,15 +161,17 @@ docker compose down
 示例中的 SSR 数据接口挂在 `/_ssr/data/*path`，可直接调试：
 
 ```bash
-curl -H "X-SSR-Fetch: 1" \
+curl -H "Origin: http://127.0.0.1:8080" \
   "http://127.0.0.1:8080/_ssr/data/hi/gopher?title=Ms."
 ```
 
-如果配置了 `SSR_FETCH_TOKEN`，还需增加 `X-SSR-Token: <token>`。
+默认按同源规则校验（`Origin`/`Referer` 与请求 Host 一致）。
+如果设置了 `SSR_FETCH_TOKEN=<token>`，请求需额外携带 `X-SSR-Token`。
 
 ## 示例常用环境变量
 
 - `DEV_MODE`：开发模式开关（`make dev` 已自动设置）
 - `DEV_SERVER_URL`：开发模式代理地址（默认 `http://127.0.0.1:3333`）
+- `SSR_FETCH_TOKEN`：配置后启用 `/_ssr/data` token 校验
 - `SSR_RENDER_LIMIT`：限制 SSR 并发渲染数量
 - `ENABLE_PPROF`：开启 `/debug/pprof`（未设置时 dev 模式默认开启）

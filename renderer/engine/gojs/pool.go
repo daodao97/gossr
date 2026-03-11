@@ -3,80 +3,113 @@ package gojs
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"runtime"
 	"strconv"
-	"sync"
+	"strings"
 	"time"
 
+	internalpool "github.com/daodao97/gossr/renderer/engine/internal/pool"
 	"github.com/dop251/goja"
 )
 
-// runtimePool 支持动态扩缩容的有界池
+const (
+	minGojaPoolSize        = 8
+	maxGojaPoolSize        = 512
+	defaultGojaPoolTimeout = 5 * time.Second
+	maxGojaPoolTimeout     = 30 * time.Second
+)
+
+// runtimePool 支持动态扩缩容的有界池。
 type runtimePool struct {
-	pool        chan *goja.Runtime
-	program     *goja.Program
-	maxSize     int
-	currentSize int
-	mu          sync.Mutex
-	timeout     time.Duration
-	closed      bool
-	done        chan struct{}
+	program *goja.Program
+	bounded *internalpool.Bounded[*goja.Runtime]
 }
 
-// newRuntimePool 创建预热的 Goja runtime 池
+// newRuntimePool 创建预热的 Goja runtime 池。
 func newRuntimePool(program *goja.Program) *runtimePool {
-	// 池大小优先从环境变量读取，否则使用 CPU 核心数 * 4
-	poolSize := runtime.NumCPU() * 4
-	if envSize := os.Getenv("GOJA_POOL_SIZE"); envSize != "" {
-		if size, err := strconv.Atoi(envSize); err == nil && size > 0 {
-			poolSize = size
-		}
+	defaultPoolSize := runtime.NumCPU() * 4
+	if defaultPoolSize < minGojaPoolSize {
+		defaultPoolSize = minGojaPoolSize
 	}
-	if poolSize < 8 {
-		poolSize = 8
+	if defaultPoolSize > maxGojaPoolSize {
+		defaultPoolSize = maxGojaPoolSize
 	}
 
-	// 获取超时配置 (默认 5 秒)
-	timeout := 5 * time.Second
-	if envTimeout := os.Getenv("GOJA_POOL_TIMEOUT"); envTimeout != "" {
-		if d, err := time.ParseDuration(envTimeout); err == nil {
-			timeout = d
-		}
-	}
+	// 池大小优先从环境变量读取，否则使用 CPU 核心数 * 4。
+	poolSize := parseGojaPoolSize(defaultPoolSize)
+	// 获取超时配置 (默认 5 秒)。
+	timeout := parseGojaPoolTimeout(defaultGojaPoolTimeout)
 
-	p := &runtimePool{
-		pool:    make(chan *goja.Runtime, poolSize),
-		program: program,
-		maxSize: poolSize,
-		timeout: timeout,
-		done:    make(chan struct{}),
-	}
+	p := &runtimePool{program: program}
+	p.bounded = internalpool.NewBounded[*goja.Runtime](
+		poolSize,
+		timeout,
+		internalpool.Callbacks[*goja.Runtime]{
+			Create: p.createRuntime,
+			Reset:  p.resetRuntime,
+			ClosedErr: func() error {
+				return fmt.Errorf("goja runtime pool is closed")
+			},
+			TimeoutErr: func(timeout time.Duration) error {
+				return fmt.Errorf("goja pool timeout after %v", timeout)
+			},
+		},
+	)
 
 	// 预热：启动时创建一半的 runtime
-	p.warmup(poolSize / 2)
+	p.bounded.Warmup(poolSize / 2)
 
 	return p
 }
 
-// warmup 预创建指定数量的 runtime
-func (p *runtimePool) warmup(count int) {
-	var wg sync.WaitGroup
-	for i := 0; i < count; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			rt := p.createRuntime()
-			p.mu.Lock()
-			p.currentSize++
-			p.mu.Unlock()
-			p.pool <- rt
-		}()
+func parseGojaPoolSize(defaultSize int) int {
+	raw := strings.TrimSpace(os.Getenv("GOJA_POOL_SIZE"))
+	if raw == "" {
+		return defaultSize
 	}
-	wg.Wait()
+
+	size, err := strconv.Atoi(raw)
+	if err != nil || size <= 0 {
+		log.Printf("config: invalid GOJA_POOL_SIZE=%q, use default %d", raw, defaultSize)
+		return defaultSize
+	}
+	if size < minGojaPoolSize {
+		log.Printf("config: GOJA_POOL_SIZE=%d below min %d, clamped", size, minGojaPoolSize)
+		return minGojaPoolSize
+	}
+	if size > maxGojaPoolSize {
+		log.Printf("config: GOJA_POOL_SIZE=%d exceeds max %d, clamped", size, maxGojaPoolSize)
+		return maxGojaPoolSize
+	}
+	return size
 }
 
-// createRuntime 创建新的 Goja runtime
+func parseGojaPoolTimeout(defaultTimeout time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv("GOJA_POOL_TIMEOUT"))
+	if raw == "" {
+		return defaultTimeout
+	}
+
+	timeout, err := time.ParseDuration(raw)
+	if err != nil {
+		log.Printf("config: invalid GOJA_POOL_TIMEOUT=%q, use default %s", raw, defaultTimeout)
+		return defaultTimeout
+	}
+
+	if timeout < 0 {
+		log.Printf("config: GOJA_POOL_TIMEOUT=%q is negative, treated as 0", raw)
+		return 0
+	}
+	if timeout > maxGojaPoolTimeout {
+		log.Printf("config: GOJA_POOL_TIMEOUT=%s exceeds max %s, clamped", timeout, maxGojaPoolTimeout)
+		return maxGojaPoolTimeout
+	}
+	return timeout
+}
+
+// createRuntime 创建新的 Goja runtime。
 func (p *runtimePool) createRuntime() *goja.Runtime {
 	rt := goja.New()
 	global := rt.GlobalObject()
@@ -101,60 +134,7 @@ func (p *runtimePool) createRuntime() *goja.Runtime {
 	return rt
 }
 
-// Get 从池中获取 runtime，支持超时、上下文取消和动态创建。
-func (p *runtimePool) Get(ctx context.Context) (*goja.Runtime, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	select {
-	case <-p.done:
-		return nil, fmt.Errorf("goja runtime pool is closed")
-	default:
-	}
-
-	// 先尝试非阻塞获取
-	select {
-	case rt := <-p.pool:
-		return rt, nil
-	default:
-	}
-
-	// 尝试动态创建新的 runtime
-	p.mu.Lock()
-	if p.closed {
-		p.mu.Unlock()
-		return nil, fmt.Errorf("goja runtime pool is closed")
-	}
-	if p.currentSize < p.maxSize {
-		p.currentSize++
-		p.mu.Unlock()
-		return p.createRuntime(), nil
-	}
-	p.mu.Unlock()
-
-	waitCtx := ctx
-	cancel := func() {}
-	if p.timeout > 0 {
-		waitCtx, cancel = context.WithTimeout(ctx, p.timeout)
-	}
-	defer cancel()
-
-	select {
-	case <-p.done:
-		return nil, fmt.Errorf("goja runtime pool is closed")
-	case rt := <-p.pool:
-		return rt, nil
-	case <-waitCtx.Done():
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, fmt.Errorf("goja pool timeout after %v", p.timeout)
-	}
-}
-
-// Put 归还 runtime 到池中
-func (p *runtimePool) Put(rt *goja.Runtime) {
+func (p *runtimePool) resetRuntime(rt *goja.Runtime) {
 	if rt == nil {
 		return
 	}
@@ -165,26 +145,19 @@ func (p *runtimePool) Put(rt *goja.Runtime) {
 	// 清理 per-request 数据
 	_ = rt.Set("__SSR_DATA__", goja.Undefined())
 	_ = rt.Set("__SSR_HEAD__", goja.Undefined())
+}
 
-	p.mu.Lock()
-	if p.closed {
-		if p.currentSize > 0 {
-			p.currentSize--
-		}
-		p.mu.Unlock()
+// Get 从池中获取 runtime，支持超时、上下文取消和动态创建。
+func (p *runtimePool) Get(ctx context.Context) (*goja.Runtime, error) {
+	return p.bounded.Get(ctx)
+}
+
+// Put 归还 runtime 到池中。
+func (p *runtimePool) Put(rt *goja.Runtime) {
+	if rt == nil {
 		return
 	}
-
-	select {
-	case p.pool <- rt:
-		p.mu.Unlock()
-	default:
-		// 池满，减少计数（让 GC 回收）
-		if p.currentSize > 0 {
-			p.currentSize--
-		}
-		p.mu.Unlock()
-	}
+	p.bounded.Put(rt)
 }
 
 // Discard 丢弃 runtime（不归还池），并更新池计数。
@@ -192,36 +165,10 @@ func (p *runtimePool) Discard(rt *goja.Runtime) {
 	if rt == nil {
 		return
 	}
-
-	p.mu.Lock()
-	if p.currentSize > 0 {
-		p.currentSize--
-	}
-	p.mu.Unlock()
+	p.bounded.Discard(rt)
 }
 
-// Close 关闭池
+// Close 关闭池。
 func (p *runtimePool) Close() {
-	p.mu.Lock()
-	if p.closed {
-		p.mu.Unlock()
-		return
-	}
-	p.closed = true
-	close(p.done)
-
-	drained := 0
-	for {
-		select {
-		case <-p.pool:
-			drained++
-		default:
-			p.currentSize -= drained
-			if p.currentSize < 0 {
-				p.currentSize = 0
-			}
-			p.mu.Unlock()
-			return
-		}
-	}
+	p.bounded.Close()
 }
