@@ -11,7 +11,7 @@
 - 注入能力：注入 HTML、`<head>` 内容、`window.__SSR_DATA__`
 - 运行保障：渲染超时、并发限制、fallback 页面
 - 模式切换：dev 代理 + 生产静态资源分发
-- 引擎可选：`v8go`（默认）或 `goja`
+- 引擎可选：`goja`（默认）或 `v8go`
 
 ## 适用场景
 
@@ -26,7 +26,7 @@ gossr/
 ├── server.go                # SSR 主流程、NoRoute、注入、fallback、pprof
 ├── ssr.go                   # Ssr/SsrEngine/WrapSSR/Resolve/SSR fetch 路由保护
 ├── payload.go               # SSRPayload 接口
-├── ssr_v8.go                # 默认构建下按 SSR_ENGINE 选择 v8go/goja
+├── ssr_v8.go                # 默认构建下按 SSR_ENGINE 选择 goja/v8go
 ├── ssr_nov8.go              # nov8 tag 下强制 goja
 ├── locales/                 # locale 支持（默认 en，支持 en/zh）
 ├── renderer/
@@ -67,7 +67,7 @@ make dev
 ### 1) 依赖
 
 - Go `1.25+`
-- 默认引擎是 `v8go`。如果环境不方便安装 v8 依赖，可使用 `-tags nov8` 走 goja。
+- 默认引擎是 `goja`。如需切到 `v8go`，可设置 `SSR_ENGINE=v8`；`-tags nov8` 仍会强制走 goja。
 
 ```bash
 go get github.com/daodao97/gossr
@@ -239,8 +239,8 @@ gossr.SetSessionTokenParser(func(token string) (map[string]any, error) {
 ## 渲染引擎与性能控制
 
 - 默认构建（无 `nov8`）：
-  - `SSR_ENGINE=v8`（默认）使用 `v8go`
-  - `SSR_ENGINE=goja` 使用 `goja`
+  - `SSR_ENGINE=goja`（默认）使用 `goja`
+  - `SSR_ENGINE=v8` 使用 `v8go`
 - `-tags nov8`：强制使用 `goja`（忽略 v8 相关能力）
 - `renderWithTimeout` 默认超时为 `3s`
 - `SSR_RENDER_LIMIT` 控制并发渲染上限：
@@ -253,7 +253,7 @@ gossr.SetSessionTokenParser(func(token string) (map[string]any, error) {
 
 - `DEV_MODE`：`1/true/yes/on/dev` 视为开发模式
 - `DEV_SERVER_URL`：dev 代理地址，默认 `http://127.0.0.1:3333`
-- `SSR_ENGINE`：`v8` / `goja`（默认 `v8`，仅默认构建下有效）
+- `SSR_ENGINE`：`v8` / `goja`（默认 `goja`，仅默认构建下有效）
 - `SSR_RENDER_LIMIT`：SSR 并发渲染上限
 - `SSR_RENDER_LIMIT=0` 表示不限制并发；非法值会回退默认值
 - `SSR_RENDER_LIMIT>1024` 会被 clamp 到 `1024`

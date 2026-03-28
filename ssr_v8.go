@@ -15,14 +15,14 @@ import (
 func newRendererFromEnv(scriptContents string) renderer.Renderer {
 	engine := strings.ToLower(strings.TrimSpace(os.Getenv("SSR_ENGINE")))
 	switch engine {
-	case "goja", "gojs", "js":
+	case "", "goja", "gojs", "js", "default":
 		log.Printf("Using goja SSR engine")
 		return rendegojs.NewRenderer(scriptContents)
-	case "", "v8", "v8go", "default":
+	case "v8", "v8go":
 		log.Printf("Using v8go SSR engine")
 		return renderv8.NewRenderer(scriptContents)
 	default:
-		log.Printf("Unknown SSR_ENGINE=%s, fallback to v8go", engine)
-		return renderv8.NewRenderer(scriptContents)
+		log.Printf("Unknown SSR_ENGINE=%s, fallback to goja", engine)
+		return rendegojs.NewRenderer(scriptContents)
 	}
 }

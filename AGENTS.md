@@ -2,13 +2,13 @@
 
 ## 项目结构与模块组织
 - `server.go`：基于 gin 的入口，处理 SSR 渲染、回退页面、dev 代理与 `SSR_RENDER_LIMIT` 并发控制。
-- `ssr_v8.go` / `ssr_nov8.go`：通过 build tag 在 v8go 与 goja 之间切换；默认使用 v8go，`nov8` tag 强制走 goja。
+- `ssr_v8.go` / `ssr_nov8.go`：通过 build tag 在 v8go 与 goja 之间切换；默认使用 goja，`nov8` tag 强制走 goja。
 - `renderer/`：`renderer.go` 定义渲染接口；`engine/gojs` 与 `engine/v8` 分别实现 goja 与 v8go 渲染器，共享 runtime 池和工具。
 - `payload.go` 暴露 `SSRPayload` 数据接口；`locales/` 管理语言列表与默认语言。
 - 前端构建通过 `FrontendBuild` 注入，期望 `index.html`、`assets/`、`server.js`（默认入口名）可从打包产物挂载。
 
 ## 构建、测试与本地开发命令
-- 依赖 Go 1.25+；默认需要系统满足 v8go 依赖。
+- 依赖 Go 1.25+；仅在显式启用 `SSR_ENGINE=v8` 时需要系统满足 v8go 依赖。
 - 常用命令：
 ```bash
 go build ./...
@@ -30,7 +30,7 @@ go vet ./...
 
 ## 测试指南
 - 目前无测试文件，新功能请补充 table-driven `_test.go`：覆盖正常渲染、超时、非法 payload、语言推断与头部注入等。
-- SSR 引擎需在默认（v8go）与 `-tags nov8`（goja）下均通过；对渲染结果可校验 HTML/Head 与注入数据。
+- SSR 引擎需在默认（goja）与 `SSR_ENGINE=v8` / `-tags nov8` 路径下均通过；对渲染结果可校验 HTML/Head 与注入数据。
 - 升级依赖或调整 build tag 前先 `go test ./...` 与 `go test -tags nov8 ./...` 双向验证，避免单一路径回归。
 
 ## Commit 与 Pull Request
