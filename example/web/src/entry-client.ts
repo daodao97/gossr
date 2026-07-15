@@ -3,12 +3,15 @@ import type { SsrState } from '~/composables/useSsrData'
 import { watch } from 'vue'
 import { makeApp } from '~/main'
 import {
+  preferredLocalePathAfterHydration,
+  readSavedLocale,
+  saveLocale,
+  shouldHydrateDocument,
+} from '~/modules/client-startup'
+import {
   availableLocales,
-  defaultLocale,
   getLocaleRef,
-  isSupportedLocale,
   localeFromPath,
-  type SupportedLocale,
 } from '~/modules/i18n'
 
 declare global {
@@ -20,7 +23,10 @@ declare global {
 const ssrPayload = window.__SSR_DATA__
 const hasInitialSsrPayload = !!ssrPayload && Object.keys(ssrPayload).length > 0
 const initialState = ssrPayload ?? {}
-const { app, router, ssrContext, i18n } = makeApp(initialState)
+const shouldHydrate = shouldHydrateDocument(document)
+const { app, router, ssrContext, i18n } = makeApp(initialState, { hydrate: shouldHydrate })
+if (!i18n)
+  throw new Error('client i18n instance is unavailable')
 const SSR_FETCH_TIMEOUT_MS = 5000
 const persistentSsrKeys = new Set(['session', 'locale', 'siteOrigin', '__ssrFetchLoading'])
 const localeRef = getLocaleRef(i18n)
@@ -28,45 +34,20 @@ let activeSsrFetchCount = 0
 
 setSsrFetchLoading(false)
 
-if (typeof window !== 'undefined') {
-  const savedLocale = window.localStorage.getItem('locale')
-  const routeLocale = localeFromPath(window.location.pathname)
+const savedLocale = readSavedLocale(window.localStorage)
+localeRef.value = localeFromPath(window.location.pathname)
 
-  if (savedLocale && isSupportedLocale(savedLocale) && routeLocale === defaultLocale)
-    localeRef.value = savedLocale
-  else
-    localeRef.value = routeLocale
+document.documentElement.setAttribute('lang', localeRef.value)
+saveLocale(window.localStorage, localeRef.value)
 
-  document.documentElement.setAttribute('lang', localeRef.value)
-
-  watch(localeRef, (newLocale) => {
-    if (availableLocales.includes(newLocale)) {
-      window.localStorage.setItem('locale', newLocale)
-      document.documentElement.setAttribute('lang', newLocale)
-    }
-  })
-}
-// Respect saved locale in URL if there's no locale segment
-let fullPath = window.location.pathname + window.location.search
-;(function ensureLocaleInPath() {
-  const pathname = window.location.pathname
-  const hasLocaleSegment = availableLocales.some((code) => {
-    if (!pathname.startsWith(`/${code}`))
-      return false
-    const next = pathname.charAt(code.length + 1)
-    return pathname === `/${code}` || next === '/'
-  })
-
-  const preferred = localeRef.value
-
-  if (!hasLocaleSegment && isSupportedLocale(preferred) && availableLocales.includes(preferred)) {
-    // Only prefix when preferred locale is not the default
-    // to keep default locale at root path for SEO/UX.
-    if (preferred && preferred !== defaultLocale) {
-      fullPath = `/${preferred}${fullPath}`
-    }
+watch(localeRef, (newLocale) => {
+  if (availableLocales.includes(newLocale)) {
+    saveLocale(window.localStorage, newLocale)
+    document.documentElement.setAttribute('lang', newLocale)
   }
-})()
+})
+
+const fullPath = window.location.pathname + window.location.search + window.location.hash
 
 let isFirstNavigation = true
 let latestSsrFetchId = 0
@@ -116,11 +97,15 @@ router.beforeResolve((to, from) => {
 
 router.replace(fullPath)
 router.isReady().then(() => {
-  app.mount('#app', shouldHydrateApp())
+  app.mount('#app')
   delete window.__SSR_DATA__
 
+  const preferredPath = preferredLocalePathAfterHydration(window.location, savedLocale)
+  if (preferredPath)
+    void router.replace(preferredPath)
+
   // Avoid blocking first paint when no server-injected payload is present.
-  if (!hasInitialSsrPayload && shouldFetchSsrDataForRoute(router.currentRoute.value))
+  if (!preferredPath && !hasInitialSsrPayload && shouldFetchSsrDataForRoute(router.currentRoute.value))
     void fetchInitialSsrData(router.currentRoute.value.fullPath)
 })
 
@@ -191,17 +176,6 @@ function extractPersistentSsrState(source: Record<string, unknown>): Record<stri
       persistent[key] = source[key]
   }
   return persistent
-}
-
-function shouldHydrateApp(): boolean {
-  if (document.querySelector('meta[name="ssr-error-id"]'))
-    return false
-
-  const appRoot = document.querySelector('#app')
-  if (!(appRoot instanceof HTMLElement))
-    return false
-
-  return appRoot.innerHTML.trim().length > 0
 }
 
 function shouldFetchSsrDataForRoute(route: { meta: { ssrData?: boolean } }): boolean {

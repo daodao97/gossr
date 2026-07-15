@@ -4,6 +4,11 @@ alias:
   - /zh/seo-demo
 meta:
   layout: home
+  nav:
+    labelKey: layout.nav.seo
+    order: 40
+    query:
+      title: SSR SEO Title
 </route>
 
 <script setup lang="ts">

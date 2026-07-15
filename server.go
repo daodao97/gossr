@@ -2,7 +2,6 @@ package gossr
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/http/pprof"
@@ -20,11 +20,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/daodao97/gossr/locales"
 	"github.com/daodao97/gossr/renderer"
+	"github.com/daodao97/gossr/renderer/engine/gojs"
 
 	"github.com/gin-gonic/gin"
 )
@@ -32,13 +32,26 @@ import (
 type FrontendBuild struct {
 	FrontendDist fs.FS
 	ServerDist   fs.FS
+	// RendererFactory 可注入外部 SSR 引擎；为空时使用内置 gojs。
+	RendererFactory renderer.Factory
+	// SessionResolver 由宿主应用负责认证并返回可安全注入前端的 session 数据。
+	// 为空时 gossr 不读取或注入任何 session。
+	SessionResolver SessionResolver
+	// SiteOrigin 固定注入前端的规范站点 origin；生产环境建议设置，避免依赖 Host 推断。
+	SiteOrigin string
+	// ShutdownContext 结束时关闭实现 renderer.Closer 的渲染器。
+	ShutdownContext context.Context
 }
 
 type BackendDataFetcher func(context.Context, *http.Request) (SSRPayload, error)
 
-// SessionTokenParser 可自定义 session_token 的解析和校验逻辑。
-// 返回的 map 会直接注入 payload.session。
-type SessionTokenParser func(token string) (map[string]any, error)
+// SessionResolver 从请求中解析 session。身份验证、过期和撤销校验均由宿主应用负责。
+// 无 session 时返回 nil, nil；返回的数据会直接注入 payload.session，不应包含原始凭证。
+type SessionResolver func(context.Context, *http.Request) (map[string]any, error)
+
+// SSRFetchAuthorizer 由宿主决定是否允许客户端读取 /_ssr/data。
+// 返回 allowed=true 时放行；拒绝时 statusCode 应为 4xx，非法状态码按 403 处理。
+type SSRFetchAuthorizer func(*http.Request) (statusCode int, allowed bool)
 
 const (
 	DefaultSSRDataRoute = "/_ssr/data"
@@ -50,6 +63,7 @@ const (
 
 var (
 	langAttributePattern = regexp.MustCompile(`lang="[^"]*"`)
+	titleElementPattern  = regexp.MustCompile(`(?is)<title(?:\s[^>]*)?>.*?</title>\s*`)
 	staticAssetExts      = map[string]struct{}{
 		".avif":        {},
 		".br":          {},
@@ -78,40 +92,24 @@ var (
 	}
 )
 
-var (
-	sessionTokenParserMu sync.RWMutex
-	sessionTokenParser   SessionTokenParser = defaultSessionTokenParser
-)
-
-// SetSessionTokenParser 设置 session_token 解析器；传 nil 可恢复默认实现。
-func SetSessionTokenParser(parser SessionTokenParser) {
-	sessionTokenParserMu.Lock()
-	defer sessionTokenParserMu.Unlock()
-
-	if parser == nil {
-		sessionTokenParser = defaultSessionTokenParser
-		return
-	}
-
-	sessionTokenParser = parser
-}
-
-func getSessionTokenParser() SessionTokenParser {
-	sessionTokenParserMu.RLock()
-	defer sessionTokenParserMu.RUnlock()
-	return sessionTokenParser
-}
-
 func RunBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher BackendDataFetcher) {
+	if err := runBlocking(router, frontendBuild, fetcher); err != nil {
+		panic(err)
+	}
+}
+
+func runBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher BackendDataFetcher) error {
+	if router == nil {
+		return errors.New("gin engine is nil")
+	}
 	devMode := isDevMode()
-	registerPprof(router)
-	router.GET("/i/:invite_code", func(c *gin.Context) {
-		inviteCode := strings.TrimSpace(c.Param("invite_code"))
-		if inviteCode != "" {
-			c.SetCookie("invite_code", inviteCode, 60*60*24*30, "/", "", false, true)
-		}
-		c.Redirect(http.StatusFound, "/")
-	})
+	if frontendBuild.ShutdownContext != nil && frontendBuild.ShutdownContext.Err() != nil {
+		return fmt.Errorf("shutdown context is already done: %w", frontendBuild.ShutdownContext.Err())
+	}
+	siteOrigin, err := normalizeSiteOrigin(frontendBuild.SiteOrigin)
+	if err != nil {
+		return err
+	}
 
 	var (
 		indexHTML string
@@ -121,10 +119,15 @@ func RunBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher Backen
 	)
 
 	if devMode {
-		proxy = newDevProxy(devServerURL())
+		var err error
+		proxy, err = buildDevProxy(devServerURL())
+		if err != nil {
+			return err
+		}
+		registerPprof(router)
 		log.Printf("Development mode enabled. Proxying to %s", devServerURL())
 		router.NoRoute(func(c *gin.Context) {
-			if strings.HasPrefix(c.Request.URL.Path, DefaultSSRDataRoute) {
+			if isSSRDataPath(c.Request.URL.Path) {
 				c.Status(http.StatusNotFound)
 				return
 			}
@@ -134,16 +137,31 @@ func RunBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher Backen
 	} else {
 		indexBytes, err := readFSFile(frontendBuild.FrontendDist, "index.html")
 		if err != nil {
-			panic(fmt.Errorf("failed to read index.html: %w", err))
+			return fmt.Errorf("failed to read index.html: %w", err)
 		}
 		indexHTML = string(indexBytes)
 
 		serverEntry, err := readFSFile(frontendBuild.ServerDist, "server.js")
 		if err != nil {
-			panic(fmt.Errorf("failed to read server.js: %w", err))
+			return fmt.Errorf("failed to read server.js: %w", err)
 		}
-		ssr = newRendererFromEnv(string(serverEntry))
-		prewarmRenderer(ssr)
+		factory := frontendBuild.RendererFactory
+		if factory == nil {
+			factory = func(scriptContents string) renderer.Renderer {
+				return gojs.NewRenderer(scriptContents)
+			}
+		}
+		ssr, err = createRenderer(factory, string(serverEntry))
+		if err != nil {
+			return err
+		}
+		if frontendBuild.ShutdownContext != nil {
+			context.AfterFunc(frontendBuild.ShutdownContext, func() {
+				if err := renderer.Close(ssr); err != nil {
+					log.Printf("close SSR renderer failed: %v", err)
+				}
+			})
+		}
 
 		renderLimit := renderConcurrencyLimit()
 		if renderLimit > 0 {
@@ -152,8 +170,9 @@ func RunBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher Backen
 
 		assetsFS, err := fs.Sub(frontendBuild.FrontendDist, "assets")
 		if err != nil {
-			panic(fmt.Errorf("failed to prepare assets filesystem: %w", err))
+			return fmt.Errorf("failed to prepare assets filesystem: %w", err)
 		}
+		registerPprof(router)
 
 		// /assets 目录使用长期缓存（文件名带 hash）
 		router.Group("/assets", cacheControlMiddleware(cacheImmutableAsset)).
@@ -163,7 +182,7 @@ func RunBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher Backen
 		registerRootStaticFiles(router, frontendBuild.FrontendDist)
 
 		router.NoRoute(func(c *gin.Context) {
-			if strings.HasPrefix(c.Request.URL.Path, DefaultSSRDataRoute) {
+			if isSSRDataPath(c.Request.URL.Path) {
 				c.Status(http.StatusNotFound)
 				return
 			}
@@ -181,21 +200,26 @@ func RunBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher Backen
 			if fetcher != nil {
 				payload, err = fetcher(c.Request.Context(), c.Request)
 				if err != nil {
-					log.Println(err)
+					log.Printf("fetch SSR data failed path=%q err=%q", c.Request.URL.Path, err)
 					c.Status(http.StatusInternalServerError)
 					return
 				}
 			}
 
-			payloadMap = enrichPayloadFromRequest(payloadToMap(payload), c.Request)
+			payloadMap, err = enrichPayloadFromRequestWithSiteOrigin(payloadToMap(payload), c.Request, frontendBuild.SessionResolver, siteOrigin)
+			if err != nil {
+				log.Printf("resolve session failed path=%q", c.Request.URL.Path)
+				c.Status(http.StatusInternalServerError)
+				return
+			}
 
 			locale := localeFromPath(c.Request.URL.Path)
 
 			reqID := fmt.Sprintf("%d", time.Now().UnixNano())
 
-			result, err := renderWithTimeout(c.Request.Context(), ssr, c.Request.URL.Path, payloadMap, 3*time.Second, renderSem)
+			result, err := renderWithTimeout(c.Request.Context(), ssr, requestRenderURL(c.Request), payloadMap, 3*time.Second, renderSem)
 			if err != nil {
-				log.Printf("ssr render failed id=%s path=%s err=%v", reqID, c.Request.URL.Path, err)
+				log.Printf("ssr render failed id=%s path=%q err=%q", reqID, c.Request.URL.Path, err)
 
 				fallback := buildFallbackPage(indexHTML, payloadMap, locale, reqID)
 				setHTMLNoCacheHeaders(c)
@@ -211,7 +235,8 @@ func RunBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher Backen
 			page = injectHeadContent(page, result.Head)
 			page, injectErr := injectSSRData(page, payloadMap)
 			if injectErr != nil {
-				log.Println(injectErr)
+				log.Printf("inject SSR data failed id=%s path=%q err=%q", reqID, c.Request.URL.Path, injectErr)
+				page = buildFallbackPage(indexHTML, nil, locale, reqID)
 			}
 
 			setHTMLNoCacheHeaders(c)
@@ -219,6 +244,25 @@ func RunBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher Backen
 			c.String(http.StatusOK, page)
 		})
 	}
+	return nil
+}
+
+func isSSRDataPath(rawPath string) bool {
+	return rawPath == DefaultSSRDataRoute || strings.HasPrefix(rawPath, DefaultSSRDataRoute+"/")
+}
+
+func createRenderer(factory renderer.Factory, scriptContents string) (instance renderer.Renderer, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			instance = nil
+			err = fmt.Errorf("create renderer: %v", recovered)
+		}
+	}()
+	instance = factory(scriptContents)
+	if instance == nil {
+		return nil, errors.New("renderer factory returned nil")
+	}
+	return instance, nil
 }
 
 func applyHTMLLang(html string, locale string) string {
@@ -242,6 +286,11 @@ func applyHTMLLang(html string, locale string) string {
 func injectHeadContent(html string, head string) string {
 	if strings.TrimSpace(head) == "" {
 		return html
+	}
+	// SSR head 中的 title 对当前路由具有权威性，模板默认 title 必须移除，
+	// 否则浏览器和搜索引擎通常会采用第一个旧标题。
+	if titleElementPattern.MatchString(head) {
+		html = titleElementPattern.ReplaceAllString(html, "")
 	}
 
 	injection := head
@@ -293,14 +342,65 @@ func payloadToMap(payload SSRPayload) map[string]any {
 }
 
 func enrichPayloadForSSRFetchResponse(payload map[string]any, req *http.Request) map[string]any {
-	return enrichPayloadWithRequestContext(payload, req, false)
+	return enrichPayloadWithRequestContext(payload, req)
 }
 
-func enrichPayloadFromRequest(payload map[string]any, req *http.Request) map[string]any {
-	return enrichPayloadWithRequestContext(payload, req, true)
+func enrichPayloadFromRequest(payload map[string]any, req *http.Request, resolver SessionResolver) (map[string]any, error) {
+	return enrichPayloadFromRequestWithSiteOrigin(payload, req, resolver, "")
 }
 
-func enrichPayloadWithRequestContext(payload map[string]any, req *http.Request, includeSession bool) map[string]any {
+func enrichPayloadFromRequestWithSiteOrigin(payload map[string]any, req *http.Request, resolver SessionResolver, siteOrigin string) (map[string]any, error) {
+	enriched := enrichPayloadWithRequestContext(payload, req)
+	if siteOrigin != "" {
+		enriched["siteOrigin"] = siteOrigin
+	}
+	// session 是认证边界的保留字段，只能由当前 SSR 实例的 resolver 写入。
+	// 这也会清除数据 handler 遗留或伪造的 session，避免匿名请求继承身份。
+	delete(enriched, "session")
+	if req == nil || resolver == nil {
+		return enriched, nil
+	}
+
+	session, err := resolver(req.Context(), req)
+	if err != nil {
+		return nil, err
+	}
+	if session != nil {
+		enriched["session"] = session
+	}
+
+	return enriched, nil
+}
+
+func normalizeSiteOrigin(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" || parsed.User != nil || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("invalid SiteOrigin %q: expected an http(s) origin without path, query, credentials, or fragment", raw)
+	}
+	if _, ok := canonicalOrigin(parsed.Scheme, parsed.Host); !ok {
+		return "", fmt.Errorf("invalid SiteOrigin %q", raw)
+	}
+	return strings.ToLower(parsed.Scheme) + "://" + parsed.Host, nil
+}
+
+func requestRenderURL(req *http.Request) string {
+	if req == nil || req.URL == nil {
+		return "/"
+	}
+
+	requestURI := req.URL.RequestURI()
+	if requestURI == "" {
+		return "/"
+	}
+	return requestURI
+}
+
+func enrichPayloadWithRequestContext(payload map[string]any, req *http.Request) map[string]any {
 	enriched := make(map[string]any, len(payload)+3)
 	for k, v := range payload {
 		enriched[k] = v
@@ -308,12 +408,6 @@ func enrichPayloadWithRequestContext(payload map[string]any, req *http.Request, 
 
 	if req == nil {
 		return enriched
-	}
-
-	if includeSession {
-		if session := sessionStateFromRequest(req); session != nil {
-			enriched["session"] = session
-		}
 	}
 
 	if locale := localeFromPath(req.URL.Path); locale != "" {
@@ -325,62 +419,6 @@ func enrichPayloadWithRequestContext(payload map[string]any, req *http.Request, 
 	}
 
 	return enriched
-}
-
-type ssrSessionPayload struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Email    string `json:"email"`
-	Provider string `json:"provider"`
-	IssuedAt int64  `json:"iat"`
-}
-
-func sessionStateFromRequest(r *http.Request) map[string]any {
-	cookie, err := r.Cookie("session_token")
-	if err != nil || cookie.Value == "" {
-		return nil
-	}
-
-	parser := getSessionTokenParser()
-	session, err := parser(cookie.Value)
-	if err != nil || session == nil {
-		if err != nil {
-			reqPath := ""
-			if r.URL != nil {
-				reqPath = r.URL.Path
-			}
-			log.Printf("invalid session_token cookie ignored: path=%s token_len=%d err=%v", reqPath, len(cookie.Value), err)
-		}
-		return nil
-	}
-
-	return session
-}
-
-func defaultSessionTokenParser(token string) (map[string]any, error) {
-	decoded, err := base64.StdEncoding.DecodeString(token)
-	if err != nil {
-		return nil, err
-	}
-
-	var payload ssrSessionPayload
-	if err := json.Unmarshal(decoded, &payload); err != nil {
-		return nil, err
-	}
-
-	if payload.Email == "" {
-		return nil, errors.New("missing email in session payload")
-	}
-
-	return map[string]any{
-		"session_token": token,
-		"user": map[string]any{
-			"id":       payload.ID,
-			"name":     payload.Name,
-			"email":    payload.Email,
-			"provider": payload.Provider,
-		},
-	}, nil
 }
 
 func readFSFile(f fs.FS, name string) ([]byte, error) {
@@ -425,24 +463,72 @@ func requestOrigin(r *http.Request) string {
 		return ""
 	}
 
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
+	scheme := requestScheme(r)
 
 	if trustForwardedHeaders() {
-		if proto := firstForwardedValue(r.Header.Get("X-Forwarded-Proto")); proto != "" {
-			scheme = proto
-		}
-
 		if forwardedPort := firstForwardedValue(r.Header.Get("X-Forwarded-Port")); forwardedPort != "" && !hostHasExplicitPort(host) {
-			if _, err := strconv.Atoi(forwardedPort); err == nil {
-				host += ":" + forwardedPort
+			port, err := strconv.Atoi(forwardedPort)
+			if err != nil || port <= 0 || port > 65535 {
+				return ""
 			}
+			host += ":" + forwardedPort
 		}
+	}
+	if _, ok := canonicalOrigin(scheme, host); !ok {
+		return ""
 	}
 
 	return fmt.Sprintf("%s://%s", scheme, host)
+}
+
+func requestScheme(r *http.Request) string {
+	scheme := "http"
+	if r != nil && r.TLS != nil {
+		scheme = "https"
+	}
+
+	if r != nil && trustForwardedHeaders() {
+		proto := strings.ToLower(firstForwardedValue(r.Header.Get("X-Forwarded-Proto")))
+		if proto == "http" || proto == "https" {
+			return proto
+		}
+		if proto != "" {
+			return ""
+		}
+	}
+
+	return scheme
+}
+
+func canonicalOrigin(scheme, host string) (string, bool) {
+	scheme = strings.ToLower(strings.TrimSpace(scheme))
+	if scheme != "http" && scheme != "https" {
+		return "", false
+	}
+
+	parsed, err := url.Parse(scheme + "://" + strings.TrimSpace(host))
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", false
+	}
+
+	hostname := strings.TrimSuffix(strings.ToLower(parsed.Hostname()), ".")
+	if hostname == "" {
+		return "", false
+	}
+	port := parsed.Port()
+	if port == "" {
+		if scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber <= 0 || portNumber > 65535 {
+		return "", false
+	}
+
+	return scheme + "://" + net.JoinHostPort(hostname, port), true
 }
 
 func primaryHost(r *http.Request) string {
@@ -508,18 +594,29 @@ func devServerURL() string {
 }
 
 func newDevProxy(rawURL string) *httputil.ReverseProxy {
-	parsed, err := url.Parse(rawURL)
+	proxy, err := buildDevProxy(rawURL)
 	if err != nil {
-		panic(fmt.Errorf("invalid DEV_SERVER_URL %q: %w", rawURL, err))
+		panic(err)
+	}
+	return proxy
+}
+
+func buildDevProxy(rawURL string) (*httputil.ReverseProxy, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		if err == nil {
+			err = fmt.Errorf("URL must use http or https and include a host")
+		}
+		return nil, fmt.Errorf("invalid DEV_SERVER_URL %q: %w", rawURL, err)
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(parsed)
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		log.Printf("dev proxy error: %v", err)
+		log.Printf("dev proxy error: %q", err)
 		http.Error(w, "dev server unavailable", http.StatusBadGateway)
 	}
 
-	return proxy
+	return proxy, nil
 }
 
 func renderWithTimeout(parentCtx context.Context, ssr renderer.Renderer, urlPath string, payload map[string]any, timeout time.Duration, sem chan struct{}) (result renderer.Result, err error) {
@@ -585,14 +682,6 @@ func renderConcurrencyLimit() int {
 
 	return defaultLimit
 }
-
-func prewarmRenderer(ssr renderer.Renderer) {
-	go func() {
-		_, _ = renderWithTimeout(context.Background(), ssr, "/", nil, 2*time.Second, nil)
-	}()
-}
-
-// newRendererFromEnv 在 ssr_v8.go 和 ssr_nov8.go 中定义
 
 func registerPprof(router *gin.Engine) {
 	if !isPprofEnabled() {

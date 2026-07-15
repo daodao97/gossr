@@ -4,6 +4,9 @@ alias:
   - /zh
 meta:
   layout: home
+  nav:
+    labelKey: layout.nav.home
+    order: 10
 </route>
 
 <script setup lang="ts">

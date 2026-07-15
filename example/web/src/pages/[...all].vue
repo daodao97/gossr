@@ -2,6 +2,10 @@
 meta:
   layout: not-found
   ssrData: false
+  nav:
+    labelKey: layout.nav.notFound
+    order: 100
+    to: /404
 </route>
 
 <script setup lang="ts">

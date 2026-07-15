@@ -12,7 +12,7 @@ import {
 export function useLocaleText() {
   const route = useRoute()
   const locale = computed<SupportedLocale>(() => localeFromPath(route.path))
-  const t = (key: MessageKey, params: MessageParams = {}) => {
+  const t = (key: MessageKey, params?: MessageParams) => {
     return translate(locale.value, key, params)
   }
 

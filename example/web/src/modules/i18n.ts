@@ -88,12 +88,15 @@ export function localeFromPath(pathname: string): SupportedLocale {
   return defaultLocale
 }
 
-export function translate(locale: SupportedLocale, key: MessageKey, params: MessageParams = {}): string {
-  const normalizedLocale = normalizeLocale(locale)
-  const dict = messages[normalizedLocale] ?? fallbackMessages
+export function translate(locale: SupportedLocale, key: MessageKey, params?: MessageParams): string {
+  // localeFromPath 已返回规范化值；先走直接查找，避免每条文案重复 trim/lowercase。
+  const dict = messages[locale] ?? messages[normalizeLocale(locale)] ?? fallbackMessages
   const template = dict[key] ?? fallbackMessages[key] ?? key
+  if (!template.includes('{'))
+    return template
+
   return template.replace(/\{(\w+)\}/g, (_, name: string) => {
-    const value = params[name]
+    const value = params?.[name]
     return value === undefined ? '' : String(value)
   })
 }

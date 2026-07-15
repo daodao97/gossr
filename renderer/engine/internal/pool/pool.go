@@ -65,37 +65,53 @@ func (p *Bounded[T]) Warmup(count int) {
 	if count <= 0 {
 		return
 	}
-
-	var wg sync.WaitGroup
-	for i := 0; i < count; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
-			resource := p.callbacks.Create()
-
-			p.mu.Lock()
-			if p.closed {
-				p.mu.Unlock()
-				p.callbacks.Dispose(resource)
-				return
-			}
-			p.currentSize++
-			p.mu.Unlock()
-
-			select {
-			case p.pool <- resource:
-			case <-p.done:
-				p.mu.Lock()
-				if p.currentSize > 0 {
-					p.currentSize--
-				}
-				p.mu.Unlock()
-				p.callbacks.Dispose(resource)
-			}
-		}()
+	if count > p.maxSize {
+		count = p.maxSize
 	}
-	wg.Wait()
+
+	for i := 0; i < count; i++ {
+		p.mu.Lock()
+		if p.closed || p.currentSize >= p.maxSize {
+			p.mu.Unlock()
+			break
+		}
+		// 创建前先占用容量，避免 Warmup 与 Get 并发时突破上限。
+		p.currentSize++
+		p.mu.Unlock()
+
+		resource := p.createReserved()
+
+		p.mu.Lock()
+		if p.closed {
+			p.currentSize--
+			p.mu.Unlock()
+			p.callbacks.Dispose(resource)
+			return
+		}
+		select {
+		case p.pool <- resource:
+			p.mu.Unlock()
+		default:
+			p.currentSize--
+			p.mu.Unlock()
+			p.callbacks.Dispose(resource)
+		}
+	}
+}
+
+// createReserved 创建已占用容量的资源；Create panic 时回滚容量后继续抛出。
+func (p *Bounded[T]) createReserved() (resource T) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			p.mu.Lock()
+			if p.currentSize > 0 {
+				p.currentSize--
+			}
+			p.mu.Unlock()
+			panic(recovered)
+		}
+	}()
+	return p.callbacks.Create()
 }
 
 // Get 从池中获取资源，支持上下文取消和等待超时。
@@ -104,6 +120,9 @@ func (p *Bounded[T]) Get(ctx context.Context) (T, error) {
 
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return zero, err
 	}
 
 	select {
@@ -128,7 +147,7 @@ func (p *Bounded[T]) Get(ctx context.Context) (T, error) {
 	if p.currentSize < p.maxSize {
 		p.currentSize++
 		p.mu.Unlock()
-		return p.callbacks.Create(), nil
+		return p.createReserved(), nil
 	}
 	p.mu.Unlock()
 

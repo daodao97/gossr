@@ -1,26 +1,16 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { RouterLink } from 'vue-router'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
+import AppNavigation from '~/components/AppNavigation.vue'
 import { useLocaleText } from '~/composables/useLocaleText'
-import { availableLocales, defaultLocale, isSupportedLocale, type MessageKey, type SupportedLocale } from '~/modules/i18n'
+import { availableLocales, defaultLocale, isSupportedLocale, type SupportedLocale } from '~/modules/i18n'
+import { navigationLinksFor, type ParsedPathTarget } from '~/modules/navigation'
 
 const route = useRoute()
+const router = useRouter()
 const { t } = useLocaleText()
-
-const baseLinks: { labelKey: MessageKey, to: string }[] = [
-  { labelKey: 'layout.nav.home', to: '/' },
-  { labelKey: 'layout.nav.hiGopher', to: '/hi/gopher' },
-  { labelKey: 'layout.nav.hiVue', to: '/hi/vue?title=Ms.' },
-  { labelKey: 'layout.nav.seo', to: '/seo-demo?title=SSR%20SEO%20Title' },
-  { labelKey: 'layout.nav.session', to: '/session-demo' },
-  { labelKey: 'layout.nav.protected', to: '/protected' },
-  { labelKey: 'layout.nav.slow', to: '/slow-ssr' },
-  { labelKey: 'layout.nav.slowFetch', to: '/slow-fetch' },
-  { labelKey: 'layout.nav.noFetch', to: '/no-ssr-fetch' },
-  { labelKey: 'layout.nav.notFound', to: '/404' },
-]
+const baseNavigationLinks = navigationLinksFor(router)
 
 interface LocaleState {
   locale: SupportedLocale
@@ -30,11 +20,10 @@ interface LocaleState {
 const localeState = computed(() => parseLocaleState(route.path))
 const currentNormalizedPath = computed(() => stripLocalePrefix(route.path))
 const links = computed(() => {
-  return baseLinks.map(link => ({
-    ...link,
-    to: localizeMenuTarget(link.to, localeState.value),
+  return baseNavigationLinks.map(link => ({
+    to: localizeMenuTarget(link.target, localeState.value),
     label: t(link.labelKey),
-    active: stripLocalePrefix(parsePathTarget(link.to).pathname) === currentNormalizedPath.value,
+    active: link.target.pathname === currentNormalizedPath.value,
   }))
 })
 
@@ -72,16 +61,15 @@ function withLocalePrefix(locale: SupportedLocale, normalizedPath: string): stri
   return `/${locale}${normalizedPath}`
 }
 
-function localizeMenuTarget(rawTarget: string, state: LocaleState): string {
-  const parsed = parsePathTarget(rawTarget)
-  const normalizedPath = stripLocalePrefix(parsed.pathname)
+function localizeMenuTarget(target: ParsedPathTarget, state: LocaleState): string {
+  const normalizedPath = target.pathname
 
   // 默认 locale 且 URL 本身不带 locale 前缀时，导航保持无前缀。
   if (!state.explicit && state.locale === defaultLocale)
-    return `${normalizedPath}${parsed.search}${parsed.hash}`
+    return `${normalizedPath}${target.search}${target.hash}`
 
   const localizedPath = withLocalePrefix(state.locale, normalizedPath)
-  return `${localizedPath}${parsed.search}${parsed.hash}`
+  return `${localizedPath}${target.search}${target.hash}`
 }
 
 function switchLocaleTarget(rawTarget: string, locale: SupportedLocale): string {
@@ -89,12 +77,6 @@ function switchLocaleTarget(rawTarget: string, locale: SupportedLocale): string 
   const normalizedPath = stripLocalePrefix(parsed.pathname)
   const localizedPath = locale === defaultLocale ? normalizedPath : withLocalePrefix(locale, normalizedPath)
   return `${localizedPath}${parsed.search}${parsed.hash}`
-}
-
-interface ParsedPathTarget {
-  pathname: string
-  search: string
-  hash: string
 }
 
 function parsePathTarget(rawTarget: string): ParsedPathTarget {
@@ -145,16 +127,7 @@ function parsePathTarget(rawTarget: string): ParsedPathTarget {
       </a>
     </nav>
 
-    <nav class="links">
-      <RouterLink
-        v-for="link in links"
-        :key="link.to"
-        :to="link.to"
-        :class="{ active: link.active }"
-      >
-        {{ link.label }}
-      </RouterLink>
-    </nav>
+    <AppNavigation :links="links" />
 
     <slot />
   </main>
@@ -210,27 +183,4 @@ h1 {
   color: #1d4ed8;
 }
 
-.links {
-  display: flex;
-  gap: 12px;
-  margin-top: 20px;
-  flex-wrap: wrap;
-  margin-bottom: 20px;
-}
-
-.links a {
-  color: #2563eb;
-  text-decoration: none;
-}
-
-.links a:hover {
-  text-decoration: underline;
-}
-
-.links a.active {
-  color: #1d4ed8;
-  font-weight: 600;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
 </style>

@@ -4,6 +4,9 @@ alias:
   - /zh/slow-ssr
 meta:
   layout: home
+  nav:
+    labelKey: layout.nav.slow
+    order: 70
 </route>
 
 <script setup lang="ts">

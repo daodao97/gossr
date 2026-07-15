@@ -4,6 +4,9 @@ alias:
   - /zh/slow-fetch
 meta:
   layout: home
+  nav:
+    labelKey: layout.nav.slowFetch
+    order: 80
 </route>
 
 <script setup lang="ts">

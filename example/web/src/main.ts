@@ -1,5 +1,5 @@
 import { createApp, createSSRApp } from 'vue'
-import { createMemoryHistory, createRouter, createWebHistory } from 'vue-router'
+import { createMemoryHistory, createRouter, createWebHistory, type Router } from 'vue-router'
 import { routes } from 'vue-router/auto-routes'
 
 import App from './App.vue'
@@ -31,13 +31,11 @@ function sessionDemoPathFor(pathname: string): string {
   return '/session-demo'
 }
 
-async function resolveAuthFromRoute(path: string): Promise<boolean> {
+async function resolveCurrentSession(): Promise<boolean> {
   if (typeof window === 'undefined')
     return false
 
-  const url = new URL(path, window.location.origin)
-  const endpoint = `/_ssr/data${url.pathname}${url.search}`
-  const response = await fetch(endpoint, {
+  const response = await fetch('/demo/session/status', {
     credentials: 'same-origin',
     headers: {
       'Accept': 'application/json',
@@ -51,27 +49,45 @@ async function resolveAuthFromRoute(path: string): Promise<boolean> {
   if (!data || typeof data !== 'object')
     return false
 
-  return isAuthenticated(data as SsrState)
+  return (data as Record<string, unknown>).authenticated === true
 }
 
-export function makeApp(initialState: SsrState = {}) {
-  const app = isServer ? createSSRApp(App) : createApp(App)
-  const router = createRouter({
+export function createAppRouter(): Router {
+  return createRouter({
     history: isServer ? createMemoryHistory() : createWebHistory('/'),
     routes,
   })
-  const ssrContext = createSsrDataContext(initialState)
-  const i18n = createI18nInstance()
+}
 
-  router.beforeEach((to) => {
+interface AppOptions {
+  hydrate?: boolean
+  router?: Router
+}
+
+export function makeApp(
+  initialState: SsrState = {},
+  options: AppOptions = {},
+) {
+  const router = options.router ?? createAppRouter()
+  const hydrate = options.hydrate ?? true
+  const app = isServer || hydrate ? createSSRApp(App) : createApp(App)
+  const ssrContext = createSsrDataContext(initialState)
+  // 服务端翻译直接从 URL 推断 locale，不需要创建仅供客户端持久化使用的 ref。
+  const i18n = isServer ? null : createI18nInstance()
+
+  const removeAuthGuard = router.beforeEach((to) => {
     const requiresAuth = to.matched.some(record => record.meta.requiresAuth === true)
     if (!requiresAuth)
       return true
 
-    if (isAuthenticated(ssrContext.state.value))
-      return true
+    if (isServer)
+      return isAuthenticated(ssrContext.state.value) || {
+        path: sessionDemoPathFor(to.path),
+        query: { next: to.fullPath },
+        replace: true,
+      }
 
-    return resolveAuthFromRoute(to.fullPath)
+    return resolveCurrentSession()
       .then((authed) => {
         if (authed)
           return true
@@ -103,5 +119,9 @@ export function makeApp(initialState: SsrState = {}) {
     router,
     i18n,
     ssrContext,
+    dispose() {
+      removeAuthGuard()
+      app.unmount()
+    },
   }
 }

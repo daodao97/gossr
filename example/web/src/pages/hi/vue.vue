@@ -4,6 +4,11 @@ alias:
   - /zh/hi/vue
 meta:
   layout: home
+  nav:
+    labelKey: layout.nav.hiVue
+    order: 30
+    query:
+      title: Ms.
 </route>
 
 <script setup lang="ts">

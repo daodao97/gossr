@@ -14,10 +14,15 @@ import type {
   ParamValueZeroOrMore,
   ParamValueZeroOrOne,
 } from 'vue-router'
+import type {
+  _ExtractParamParserType,
+} from 'vue-router/experimental'
 
 declare module 'vue-router' {
   interface TypesConfig {
-    ParamParsers: never
+    _ParamParsers: {}
+    RouteNamedMap: import('vue-router/auto-routes').RouteNamedMap
+    _RouteFileInfoMap: import('vue-router/auto-routes')._RouteFileInfoMap
   }
 }
 
@@ -114,17 +119,23 @@ declare module 'vue-router/auto-routes' {
         | '/'
       views:
         | never
+      pathParamNames:
+        | never
     }
     'src/pages/[...all].vue': {
       routes:
         | '/[...all]'
       views:
         | never
+      pathParamNames:
+        | 'all'
     }
     'src/pages/hi/gopher.vue': {
       routes:
         | '/hi/gopher'
       views:
+        | never
+      pathParamNames:
         | never
     }
     'src/pages/hi/vue.vue': {
@@ -132,11 +143,15 @@ declare module 'vue-router/auto-routes' {
         | '/hi/vue'
       views:
         | never
+      pathParamNames:
+        | never
     }
     'src/pages/no-ssr-fetch.vue': {
       routes:
         | '/no-ssr-fetch'
       views:
+        | never
+      pathParamNames:
         | never
     }
     'src/pages/protected.vue': {
@@ -144,11 +159,15 @@ declare module 'vue-router/auto-routes' {
         | '/protected'
       views:
         | never
+      pathParamNames:
+        | never
     }
     'src/pages/seo-demo.vue': {
       routes:
         | '/seo-demo'
       views:
+        | never
+      pathParamNames:
         | never
     }
     'src/pages/session-demo.vue': {
@@ -156,17 +175,23 @@ declare module 'vue-router/auto-routes' {
         | '/session-demo'
       views:
         | never
+      pathParamNames:
+        | never
     }
     'src/pages/slow-fetch.vue': {
       routes:
         | '/slow-fetch'
       views:
         | never
+      pathParamNames:
+        | never
     }
     'src/pages/slow-ssr.vue': {
       routes:
         | '/slow-ssr'
       views:
+        | never
+      pathParamNames:
         | never
     }
   }

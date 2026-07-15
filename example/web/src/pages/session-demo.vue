@@ -4,6 +4,9 @@ alias:
   - /zh/session-demo
 meta:
   layout: home
+  nav:
+    labelKey: layout.nav.session
+    order: 50
 </route>
 
 <script setup lang="ts">
@@ -21,7 +24,6 @@ interface SessionUser {
 }
 
 interface SessionPayload {
-  session_token?: string
   user?: SessionUser
 }
 
@@ -40,12 +42,10 @@ const user = computed(() => payload.value.session?.user)
 const isLoggedIn = computed(() => !!user.value?.email)
 const nextPath = computed(() => {
   const next = route.query.next
-  if (typeof next === 'string' && next.startsWith('/') && !next.startsWith('//'))
+  if (typeof next === 'string' && next.startsWith('/') && !next.startsWith('//') && !next.includes('\\'))
     return next
   return route.path || '/session-demo'
 })
-const loginURL = computed(() => `/demo/session/login?next=${encodeURIComponent(nextPath.value)}`)
-const logoutURL = computed(() => `/demo/session/logout?next=${encodeURIComponent(nextPath.value)}`)
 </script>
 
 <template>
@@ -66,8 +66,14 @@ const logoutURL = computed(() => `/demo/session/logout?next=${encodeURIComponent
     </template>
 
     <div class="actions">
-      <a class="btn" :href="loginURL">{{ t('page.session.setDemo') }}</a>
-      <a class="btn ghost" :href="logoutURL">{{ t('page.session.clearDemo') }}</a>
+      <form method="post" action="/demo/session/login">
+        <input type="hidden" name="next" :value="nextPath">
+        <button class="btn" type="submit">{{ t('page.session.setDemo') }}</button>
+      </form>
+      <form method="post" action="/demo/session/logout">
+        <input type="hidden" name="next" :value="nextPath">
+        <button class="btn ghost" type="submit">{{ t('page.session.clearDemo') }}</button>
+      </form>
     </div>
   </section>
 </template>
@@ -97,11 +103,14 @@ const logoutURL = computed(() => `/demo/session/logout?next=${encodeURIComponent
 
 .btn {
   display: inline-block;
+  border: 0;
   padding: 8px 12px;
   border-radius: 8px;
   background: #1d4ed8;
   color: #fff;
   text-decoration: none;
+  font: inherit;
+  cursor: pointer;
 }
 
 .btn.ghost {

@@ -1,12 +1,16 @@
 package main
 
 import (
-	"encoding/base64"
-	"encoding/json"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/daodao97/gossr"
@@ -35,14 +39,15 @@ func (p greetingPayload) AsMap() map[string]any {
 
 var demoLocales = append([]string(nil), locales.Supported...)
 var localeMessages = mustLoadLocaleMessages()
+var ssrDataEngine = gossr.NewDataEngine()
 
 func init() {
-	registerLocalizedSSRRoute("/", homePayload)
-	registerLocalizedSSRRoute("/hi/:name", hiPayload)
-	registerLocalizedSSRRoute("/seo-demo", seoDemoPayload)
-	registerLocalizedSSRRoute("/session-demo", sessionDemoPayload)
-	registerLocalizedSSRRoute("/slow-ssr", slowSSRPayload)
-	registerLocalizedSSRRoute("/slow-fetch", slowFetchPayload)
+	registerLocalizedSSRRoute(ssrDataEngine, "/", homePayload)
+	registerLocalizedSSRRoute(ssrDataEngine, "/hi/:name", hiPayload)
+	registerLocalizedSSRRoute(ssrDataEngine, "/seo-demo", seoDemoPayload)
+	registerLocalizedSSRRoute(ssrDataEngine, "/session-demo", sessionDemoPayload)
+	registerLocalizedSSRRoute(ssrDataEngine, "/slow-ssr", slowSSRPayload)
+	registerLocalizedSSRRoute(ssrDataEngine, "/slow-fetch", slowFetchPayload)
 }
 
 func homePayload(c *gin.Context) (gossr.SSRPayload, error) {
@@ -109,10 +114,10 @@ func buildPayload(c *gin.Context, message string) greetingPayload {
 	}
 }
 
-func registerLocalizedSSRRoute(basePath string, handler func(*gin.Context) (gossr.SSRPayload, error)) {
-	gossr.SsrEngine.GET(basePath, gossr.WrapSSR(handler))
+func registerLocalizedSSRRoute(engine *gin.Engine, basePath string, handler func(*gin.Context) (gossr.SSRPayload, error)) {
+	engine.GET(basePath, gossr.WrapSSR(handler))
 	for _, locale := range demoLocales {
-		gossr.SsrEngine.GET(localizedRoutePath(locale, basePath), gossr.WrapSSR(handler))
+		engine.GET(localizedRoutePath(locale, basePath), gossr.WrapSSR(handler))
 	}
 }
 
@@ -159,10 +164,16 @@ func mustLoadLocaleMessages() *web.LocaleMessages {
 
 func main() {
 	router := gin.New()
-	router.Use(gin.Logger(), gin.Recovery())
+	if accessLogEnabled() {
+		router.Use(gin.Logger())
+	}
+	router.Use(gin.Recovery())
 	registerSessionDemoRoutes(router)
 
-	if err := gossr.Ssr(router, web.Dist); err != nil {
+	if err := gossr.SsrWithOptions(router, web.Dist, gossr.Options{
+		SessionResolver: resolveDemoSession,
+		DataEngine:      ssrDataEngine,
+	}); err != nil {
 		log.Fatal(err)
 	}
 
@@ -173,7 +184,21 @@ func main() {
 	}
 }
 
-type demoSessionToken struct {
+func accessLogEnabled() bool {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv("HTTP_ACCESS_LOG")))
+	if raw == "" {
+		return gin.Mode() != gin.ReleaseMode
+	}
+
+	switch raw {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+type demoSession struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
 	Email    string `json:"email"`
@@ -181,10 +206,117 @@ type demoSessionToken struct {
 	IssuedAt int64  `json:"iat"`
 }
 
+const (
+	demoSessionTTL      = 7 * 24 * time.Hour
+	demoSessionMaxItems = 1024
+)
+
+type demoSessionStore struct {
+	mu       sync.Mutex
+	sessions map[string]demoSession
+	maxItems int
+	ttl      time.Duration
+}
+
+func newDemoSessionStore(maxItems int, ttl time.Duration) *demoSessionStore {
+	return &demoSessionStore{
+		sessions: make(map[string]demoSession),
+		maxItems: maxItems,
+		ttl:      ttl,
+	}
+}
+
+func (s *demoSessionStore) load(token string, now time.Time) (demoSession, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	session, ok := s.sessions[token]
+	if !ok {
+		return demoSession{}, false
+	}
+	if s.expired(session, now) {
+		delete(s.sessions, token)
+		return demoSession{}, false
+	}
+	return session, true
+}
+
+func (s *demoSessionStore) store(token string, session demoSession, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	oldestToken := ""
+	oldestIssuedAt := int64(0)
+	for existingToken, existing := range s.sessions {
+		if s.expired(existing, now) {
+			delete(s.sessions, existingToken)
+			continue
+		}
+		if oldestToken == "" || existing.IssuedAt < oldestIssuedAt {
+			oldestToken = existingToken
+			oldestIssuedAt = existing.IssuedAt
+		}
+	}
+
+	if _, exists := s.sessions[token]; !exists && len(s.sessions) >= s.maxItems && oldestToken != "" {
+		delete(s.sessions, oldestToken)
+	}
+	s.sessions[token] = session
+}
+
+func (s *demoSessionStore) delete(token string) {
+	s.mu.Lock()
+	delete(s.sessions, token)
+	s.mu.Unlock()
+}
+
+func (s *demoSessionStore) expired(session demoSession, now time.Time) bool {
+	return now.Sub(time.Unix(session.IssuedAt, 0)) > s.ttl
+}
+
+var demoSessions = newDemoSessionStore(demoSessionMaxItems, demoSessionTTL)
+
+func resolveDemoSession(_ context.Context, req *http.Request) (map[string]any, error) {
+	cookie, err := req.Cookie("session_token")
+	if err != nil || cookie.Value == "" {
+		return nil, nil
+	}
+
+	session, ok := demoSessions.load(cookie.Value, time.Now())
+	if !ok {
+		return nil, nil
+	}
+	return map[string]any{
+		"user": map[string]any{
+			"id":       session.ID,
+			"name":     session.Name,
+			"email":    session.Email,
+			"provider": session.Provider,
+		},
+	}, nil
+}
+
 func registerSessionDemoRoutes(router *gin.Engine) {
-	router.GET("/demo/session/login", func(c *gin.Context) {
-		nextPath := sanitizeNextPath(c.Query("next"), "/session-demo")
-		payload := demoSessionToken{
+	methodNotAllowed := func(c *gin.Context) {
+		c.Header("Allow", http.MethodPost)
+		c.Status(http.StatusMethodNotAllowed)
+	}
+	router.GET("/demo/session/login", methodNotAllowed)
+	router.GET("/demo/session/logout", methodNotAllowed)
+	router.GET("/demo/session/status", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+		c.Header("Pragma", "no-cache")
+		session, err := resolveDemoSession(c.Request.Context(), c.Request)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"authenticated": false})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"authenticated": session != nil})
+	})
+
+	router.POST("/demo/session/login", requireSameOriginForm, func(c *gin.Context) {
+		nextPath := sanitizeNextPath(c.PostForm("next"), "/session-demo")
+		session := demoSession{
 			ID:       "u_demo_1001",
 			Name:     "SSR Demo User",
 			Email:    "demo@example.com",
@@ -192,30 +324,52 @@ func registerSessionDemoRoutes(router *gin.Engine) {
 			IssuedAt: time.Now().Unix(),
 		}
 
-		raw, err := json.Marshal(payload)
-		if err != nil {
-			c.String(http.StatusInternalServerError, "encode session payload failed")
+		tokenBytes := make([]byte, 32)
+		if _, err := rand.Read(tokenBytes); err != nil {
+			c.String(http.StatusInternalServerError, "create session failed")
 			return
 		}
 
-		token := base64.StdEncoding.EncodeToString(raw)
-		c.SetCookie("session_token", token, 60*60*24*7, "/", "", false, true)
+		token := hex.EncodeToString(tokenBytes)
+		if cookie, err := c.Request.Cookie("session_token"); err == nil {
+			demoSessions.delete(cookie.Value)
+		}
+		demoSessions.store(token, session, time.Now())
+		c.SetSameSite(http.SameSiteLaxMode)
+		c.SetCookie("session_token", token, int(demoSessionTTL.Seconds()), "/", "", c.Request.TLS != nil, true)
 		c.Redirect(http.StatusFound, nextPath)
 	})
 
-	router.GET("/demo/session/logout", func(c *gin.Context) {
-		nextPath := sanitizeNextPath(c.Query("next"), "/session-demo")
-		c.SetCookie("session_token", "", -1, "/", "", false, true)
+	router.POST("/demo/session/logout", requireSameOriginForm, func(c *gin.Context) {
+		nextPath := sanitizeNextPath(c.PostForm("next"), "/session-demo")
+		if cookie, err := c.Request.Cookie("session_token"); err == nil {
+			demoSessions.delete(cookie.Value)
+		}
+		c.SetSameSite(http.SameSiteLaxMode)
+		c.SetCookie("session_token", "", -1, "/", "", c.Request.TLS != nil, true)
 		c.Redirect(http.StatusFound, nextPath)
 	})
 }
 
+func requireSameOriginForm(c *gin.Context) {
+	if _, ok := gossr.DefaultSSRFetchAuthorizer(c.Request); !ok {
+		c.AbortWithStatus(http.StatusForbidden)
+		return
+	}
+	c.Next()
+}
+
 func sanitizeNextPath(raw string, fallback string) string {
 	nextPath := strings.TrimSpace(raw)
-	if nextPath == "" {
+	if nextPath == "" || strings.Contains(nextPath, "\\") {
 		return fallback
 	}
-	if !strings.HasPrefix(nextPath, "/") || strings.HasPrefix(nextPath, "//") {
+
+	parsed, err := url.Parse(nextPath)
+	if err != nil || parsed.IsAbs() || parsed.Host != "" || parsed.User != nil {
+		return fallback
+	}
+	if !strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") {
 		return fallback
 	}
 	return nextPath

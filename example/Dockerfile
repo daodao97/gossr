@@ -9,7 +9,7 @@ RUN --mount=type=cache,target=/root/.npm npm ci
 COPY example/web ./
 RUN npm run build
 
-FROM golang:1.25-alpine AS backend
+FROM golang:1.26.5-alpine AS backend
 WORKDIR /app
 
 RUN apk add --no-cache ca-certificates git
@@ -22,7 +22,7 @@ COPY --from=frontend /app/example/web/dist ./example/web/dist
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    go build -tags nov8 -o /out/server ./example
+    go build -o /out/server ./example
 
 FROM alpine:3.21 AS final
 WORKDIR /app

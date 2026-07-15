@@ -5,6 +5,9 @@ alias:
 meta:
   layout: home
   requiresAuth: true
+  nav:
+    labelKey: layout.nav.protected
+    order: 60
 </route>
 
 <script setup lang="ts">

@@ -5,6 +5,9 @@ alias:
 meta:
   layout: home
   ssrData: false
+  nav:
+    labelKey: layout.nav.noFetch
+    order: 90
 </route>
 
 <script setup lang="ts">

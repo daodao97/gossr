@@ -24,13 +24,15 @@ web-build: ## 构建前端产物（dist/client + dist/server）
 	$(NPM) --prefix web run build
 
 dev: ## Go 开发模式（需先执行 make web-dev）
-	DEV_MODE=1 DEV_SERVER_URL=$(DEV_SERVER_URL) $(GO) run -tags nov8 .
+	DEV_MODE=1 DEV_SERVER_URL=$(DEV_SERVER_URL) $(GO) run .
 
 run: web-build ## Go 生产模式运行（自动先执行 web-build）
-	$(GO) run -tags nov8 .
+	$(GO) run .
 
-test: ## 运行 Go 测试（goja 路径）
-	$(GO) test -tags nov8 ./...
+test: ## 运行 Go 与前端测试
+	$(GO) test ./...
+	$(NPM) --prefix web run typecheck
+	$(NPM) --prefix web test
 
 fmt: ## 格式化 Go 代码
 	$(GO) fmt ./...

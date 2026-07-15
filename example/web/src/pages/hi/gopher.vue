@@ -4,6 +4,9 @@ alias:
   - /zh/hi/gopher
 meta:
   layout: home
+  nav:
+    labelKey: layout.nav.hiGopher
+    order: 20
 </route>
 
 <script setup lang="ts">
