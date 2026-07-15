@@ -27,10 +27,20 @@ var benchmarkPayload = map[string]any{
 	},
 }
 
+var benchmarkPagePayload = map[string]any{
+	"message":     "render a representative page payload",
+	"locale":      "en",
+	"path":        "/",
+	"query":       "",
+	"generatedAt": "2026-07-16T00:00:00+08:00",
+	"siteOrigin":  "https://example.com",
+}
+
 var retainedBenchmarkRenderer *Renderer
 
 func benchmarkRender(b *testing.B, script string, parallel bool) {
 	b.Helper()
+	b.Setenv("GOJA_RUNTIME_MAX_RENDERS", "1000")
 	r := NewRenderer(script)
 	b.Cleanup(r.pool.Close)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -85,6 +95,51 @@ func BenchmarkRendererExampleBundleParallel(b *testing.B) {
 		b.Skipf("example bundle is unavailable: %v", err)
 	}
 	benchmarkRender(b, string(script), true)
+}
+
+func BenchmarkRendererExampleRoutes(b *testing.B) {
+	scriptPath := filepath.Join("..", "..", "..", "example", "web", "dist", "server", renderer.DefaultSSRScriptName)
+	script, err := os.ReadFile(scriptPath)
+	if err != nil {
+		b.Skipf("example bundle is unavailable: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		url     string
+		payload map[string]any
+	}{
+		{name: "home", url: "/", payload: benchmarkPagePayload},
+		{name: "seo", url: "/seo-demo?title=Benchmark", payload: benchmarkPagePayload},
+		{name: "session", url: "/session-demo", payload: benchmarkPagePayload},
+		{name: "protected", url: "/protected", payload: map[string]any{
+			"session": map[string]any{"user": map[string]any{"email": "benchmark@example.com"}},
+		}},
+		{name: "not-found", url: "/benchmark", payload: benchmarkPayload},
+	}
+
+	for _, tt := range tests {
+		b.Run(tt.name, func(b *testing.B) {
+			benchmarkRenderURL(b, string(script), tt.url, tt.payload)
+		})
+	}
+}
+
+func benchmarkRenderURL(b *testing.B, script string, url string, payload map[string]any) {
+	b.Helper()
+	b.Setenv("GOJA_RUNTIME_MAX_RENDERS", "1000")
+	r := NewRenderer(script)
+	b.Cleanup(r.pool.Close)
+	if _, err := r.Render(context.Background(), url, payload); err != nil {
+		b.Fatalf("warm renderer: %v", err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := r.Render(context.Background(), url, payload); err != nil {
+			b.Fatalf("render: %v", err)
+		}
+	}
 }
 
 func BenchmarkRendererStartupSynthetic(b *testing.B) {

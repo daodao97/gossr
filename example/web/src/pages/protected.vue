@@ -11,7 +11,6 @@ meta:
 </route>
 
 <script setup lang="ts">
-import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { useLocaleText } from '~/composables/useLocaleText'
@@ -35,7 +34,6 @@ interface ExamplePayload {
 const route = useRoute()
 const payload = useSsrData<ExamplePayload>()
 const { t } = useLocaleText()
-const user = computed(() => payload.value.session?.user ?? null)
 </script>
 
 <template>
@@ -43,8 +41,8 @@ const user = computed(() => payload.value.session?.user ?? null)
     <h2>{{ t('page.protected.title') }}</h2>
     <p>{{ t('page.protected.desc') }}</p>
     <p><strong>{{ t('common.field.path') }}:</strong> {{ route.fullPath }}</p>
-    <p><strong>{{ t('common.field.userName') }}:</strong> {{ user?.name ?? '-' }}</p>
-    <p><strong>{{ t('common.field.userEmail') }}:</strong> {{ user?.email ?? '-' }}</p>
+    <p><strong>{{ t('common.field.userName') }}:</strong> {{ payload.session?.user?.name ?? '-' }}</p>
+    <p><strong>{{ t('common.field.userEmail') }}:</strong> {{ payload.session?.user?.email ?? '-' }}</p>
   </section>
 </template>
 

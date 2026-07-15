@@ -325,7 +325,7 @@ options.SSRFetchAuthorizer = func(req *http.Request) (int, bool) {
   - `0`：不限制并发（不启用 semaphore）
   - `>0`：使用该值限制并发
 - gojs 在初始化阶段编译脚本并预热 1 个 runtime，其余 runtime 按并发需求惰性创建；每个 runtime 会缓存 `ssrRender` 函数
-- 默认每个 runtime 渲染 1000 次后回收，限制前端 Promise、路由等第三方状态在长时间运行中的累积
+- 默认每个 runtime 渲染 200 次后回收，限制前端 Promise、路由等第三方状态在长时间运行中的累积
 - gojs 会把 payload 复制为原生 JS 数据，脚本不能反向修改宿主 map/slice；非 JSON 数据会在渲染前返回错误
 - gojs 提供浏览器兼容的 `atob` / `btoa`，便于运行不依赖 Node `Buffer` 的自包含 SSR bundle
 - goja 脚本异常或 payload 转换失败后会丢弃当前 runtime，避免半变更状态进入下一请求
@@ -343,9 +343,9 @@ options.SSRFetchAuthorizer = func(req *http.Request) (int, bool) {
 - `GOJA_POOL_SIZE` / `GOJA_POOL_TIMEOUT`：goja 池大小与获取超时（默认超时 `5s`）
   - `GOJA_POOL_SIZE` 会限制在 `[1, 512]`，默认等于 `GOMAXPROCS`
   - `GOJA_POOL_TIMEOUT` 负值会按 `0` 处理，最大 `30s`
-- `GOJA_RUNTIME_MAX_RENDERS`：单个 goja runtime 的最大渲染次数，默认 `1000`，最大 `1000000`；设为 `0` 会关闭回收。Vue 等复杂 bundle 在长时间复用时可能持续扩大 runtime，生产环境不建议关闭
+- `GOJA_RUNTIME_MAX_RENDERS`：单个 goja runtime 的最大渲染次数，默认 `200`，最大 `1000000`；设为 `0` 会关闭回收。Vue 等复杂 bundle 在长时间复用时可能持续扩大 runtime，生产环境不建议关闭
 
-`GOGC` 属于宿主进程的全局 Go 配置，gossr 不会擅自修改。分配密集型 SSR 可在目标机器上对比 `GOGC=100/150/200`：提高该值通常能减少 GC CPU，但会增加峰值 RSS，必须结合内存限制和持续压测选择。
+`GOGC` 与 `GOMEMLIMIT` 属于宿主进程的全局 Go 配置，gossr 不会擅自修改。分配密集型 SSR 可在目标机器上重点对比 `GOGC=100/200/300`：提高该值通常能减少 GC CPU，但会增加峰值 RSS，必须结合内存限制和持续压测选择；示例 Vue bundle 在 Apple M3 上的吞吐甜点约为 `GOGC=300`。设置较高 `GOGC` 时建议同时按容器余量设置 `GOMEMLIMIT`，本机示例的 `256MiB` 软限制保留了大部分吞吐；这些数据不是所有应用的通用默认值。
 
 真实前端 bundle 的基准可在完成 `example/web` 构建后运行：
 
@@ -355,7 +355,9 @@ GOMAXPROCS=4 go test ./renderer/engine/gojs \
   -benchmem -benchtime=3s -count=5
 ```
 
-示例服务端入口在同一个 goja runtime 内复用 Vue Router 的路由匹配器，但每次请求仍创建独立 app、SSR data context 和鉴权 guard，并在完成后移除 guard。这样避免每次重新编译路由正则，同时保持 session 与 payload 请求隔离。自定义前端入口采用相同策略时，不要把请求 payload、用户信息或 head 缓存在模块级变量中。
+示例服务端入口在同一个 goja runtime 内复用 Vue Router 的路由匹配器，但每次请求仍创建独立 app 和 SSR data context。服务端只对可能受保护的路由执行完整解析，客户端继续使用异步鉴权 guard；`addRoute`、`removeRoute`、`clearRoutes` 会自动失效保护路由缓存。这样避免每次重新编译路由正则和公开路由上的无效 guard，同时保持动态路由、session 与 payload 请求隔离。自定义前端入口采用相同策略时，不要把请求 payload、用户信息或 head 缓存在模块级变量中。
+
+完整的基准环境、优化过程、保留/撤回实验和调优矩阵见 [PERFORMANCE.md](./PERFORMANCE.md)。
 
 Vue 项目应使用 Vite 的真实 SSR 编译（`build.ssr: true`），并生成不含 Node `require` 的自包含 bundle。参考 `example/web/vite.config.server.ts`：使用 Vue runtime-only ESM 和 `@vue/server-renderer` bundler ESM，既生成组件 `ssrRender`，又避免把运行时编译器、`node:stream` 和 `Buffer` 带入 Goja。
 

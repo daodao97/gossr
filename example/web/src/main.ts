@@ -4,10 +4,46 @@ import { routes } from 'vue-router/auto-routes'
 
 import App from './App.vue'
 
+import { createLocaleTextContext, localeTextKey } from '~/composables/useLocaleText'
 import { createSsrDataContext, ssrDataKey, type SsrState } from '~/composables/useSsrData'
 import { createI18nInstance, isSupportedLocale } from '~/modules/i18n'
 
 const isServer = typeof window === 'undefined'
+const serverAuthPolicyCache = new WeakMap<Router, {
+  dynamic: boolean
+  protectedPaths: ReadonlySet<string>
+}>()
+const trackedServerRouters = new WeakSet<Router>()
+
+function trackServerRouteMutations(router: Router): void {
+  if (trackedServerRouters.has(router))
+    return
+
+  trackedServerRouters.add(router)
+  const invalidate = () => serverAuthPolicyCache.delete(router)
+
+  const addRoute = router.addRoute.bind(router) as unknown as (...args: unknown[]) => () => void
+  router.addRoute = ((...args: unknown[]) => {
+    const remove = addRoute(...args)
+    invalidate()
+    return () => {
+      remove()
+      invalidate()
+    }
+  }) as Router['addRoute']
+
+  const removeRoute = router.removeRoute.bind(router)
+  router.removeRoute = ((name) => {
+    removeRoute(name)
+    invalidate()
+  }) as Router['removeRoute']
+
+  const clearRoutes = router.clearRoutes.bind(router)
+  router.clearRoutes = (() => {
+    clearRoutes()
+    invalidate()
+  }) as Router['clearRoutes']
+}
 
 function isAuthenticated(state: SsrState): boolean {
   const session = state.session
@@ -29,6 +65,48 @@ function sessionDemoPathFor(pathname: string): string {
     return `/${firstSegment}/session-demo`
 
   return '/session-demo'
+}
+
+export function resolveServerRenderURL(router: Router, rawURL: string, state: SsrState): string {
+  if (isAuthenticated(state))
+    return rawURL
+
+  let policy = serverAuthPolicyCache.get(router)
+  if (!policy) {
+    trackServerRouteMutations(router)
+    const protectedPaths = new Set<string>()
+    let dynamic = false
+    for (const record of router.getRoutes()) {
+      if (record.meta.requiresAuth !== true)
+        continue
+      if (record.path.includes(':'))
+        dynamic = true
+      else {
+        protectedPaths.add(record.path)
+        if (record.path !== '/' && !record.path.endsWith('/'))
+          protectedPaths.add(`${record.path}/`)
+      }
+    }
+    policy = { dynamic, protectedPaths }
+    serverAuthPolicyCache.set(router, policy)
+  }
+
+  const queryIndex = rawURL.indexOf('?')
+  const hashIndex = rawURL.indexOf('#')
+  const pathEnd = queryIndex < 0 ? hashIndex : hashIndex < 0 ? queryIndex : Math.min(queryIndex, hashIndex)
+  const pathname = pathEnd < 0 ? rawURL : rawURL.slice(0, pathEnd)
+  if (!policy.dynamic && !policy.protectedPaths.has(pathname))
+    return rawURL
+
+  const target = router.resolve(rawURL)
+  const requiresAuth = target.matched.some(record => record.meta.requiresAuth === true)
+  if (!requiresAuth)
+    return target.fullPath
+
+  return router.resolve({
+    path: sessionDemoPathFor(target.path),
+    query: { next: target.fullPath },
+  }).fullPath
 }
 
 async function resolveCurrentSession(): Promise<boolean> {
@@ -53,10 +131,13 @@ async function resolveCurrentSession(): Promise<boolean> {
 }
 
 export function createAppRouter(): Router {
-  return createRouter({
+  const router = createRouter({
     history: isServer ? createMemoryHistory() : createWebHistory('/'),
     routes,
   })
+  if (isServer)
+    trackServerRouteMutations(router)
+  return router
 }
 
 interface AppOptions {
@@ -75,17 +156,10 @@ export function makeApp(
   // 服务端翻译直接从 URL 推断 locale，不需要创建仅供客户端持久化使用的 ref。
   const i18n = isServer ? null : createI18nInstance()
 
-  const removeAuthGuard = router.beforeEach((to) => {
+  const removeAuthGuard = isServer ? () => {} : router.beforeEach((to) => {
     const requiresAuth = to.matched.some(record => record.meta.requiresAuth === true)
     if (!requiresAuth)
       return true
-
-    if (isServer)
-      return isAuthenticated(ssrContext.state.value) || {
-        path: sessionDemoPathFor(to.path),
-        query: { next: to.fullPath },
-        replace: true,
-      }
 
     return resolveCurrentSession()
       .then((authed) => {
@@ -113,6 +187,7 @@ export function makeApp(
 
   app.use(router)
   app.provide(ssrDataKey, ssrContext)
+  app.provide(localeTextKey, createLocaleTextContext(router))
 
   return {
     app,

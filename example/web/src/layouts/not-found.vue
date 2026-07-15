@@ -1,11 +1,9 @@
 <script setup lang="ts">
-import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import { useLocaleText } from '~/composables/useLocaleText'
 
 const { locale, t } = useLocaleText()
-const homePath = computed(() => (locale.value === 'zh' ? '/zh' : '/'))
 </script>
 
 <template>
@@ -13,7 +11,7 @@ const homePath = computed(() => (locale.value === 'zh' ? '/zh' : '/'))
     <section class="shell">
       <p class="eyebrow">{{ t('layout.notFound.eyebrow') }}</p>
       <slot />
-      <RouterLink class="home-link" :to="homePath">{{ t('layout.notFound.backHome') }}</RouterLink>
+      <RouterLink class="home-link" :to="locale === 'zh' ? '/zh' : '/'">{{ t('layout.notFound.backHome') }}</RouterLink>
     </section>
   </main>
 </template>

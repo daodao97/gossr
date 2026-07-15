@@ -1,22 +1,11 @@
 <script setup lang="ts">
 import { Fragment, computed } from 'vue'
-import type { Component } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 
 import { useSsrData } from '~/composables/useSsrData'
+import { layouts } from '~/modules/layouts'
 
 const route = useRoute()
-const layoutModules = import.meta.glob('./layouts/*.vue', {
-  eager: true,
-  import: 'default',
-}) as Record<string, Component>
-
-const layouts = Object.fromEntries(
-  Object.entries(layoutModules).map(([path, component]) => {
-    const layoutName = path.split('/').pop()?.replace('.vue', '') ?? path
-    return [layoutName, component]
-  }),
-) as Record<string, Component>
 
 // 未配置 layout 或 layout 不存在时，直接渲染页面。
 const currentLayout = computed(() => {
@@ -28,11 +17,10 @@ const currentLayout = computed(() => {
 })
 
 const ssrState = useSsrData<{ __ssrFetchLoading?: boolean }>()
-const isSsrFetchLoading = computed(() => ssrState.value.__ssrFetchLoading === true)
 </script>
 
 <template>
-  <div v-if="isSsrFetchLoading" class="global-fetch-loading" />
+  <div v-if="ssrState.__ssrFetchLoading === true" class="global-fetch-loading" />
   <RouterView v-slot="{ Component }">
     <component :is="currentLayout">
       <component :is="Component" v-if="Component" />

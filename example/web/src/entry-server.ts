@@ -1,6 +1,6 @@
 import { renderToString } from '@vue/server-renderer'
 
-import { createAppRouter, makeApp } from '~/main'
+import { createAppRouter, makeApp, resolveServerRenderURL } from '~/main'
 import type { SsrState } from '~/composables/useSsrData'
 
 const router = createAppRouter()
@@ -9,7 +9,7 @@ async function render(url: string) {
   const initialState: SsrState = (globalThis as any).__SSR_DATA__ ?? {}
   const { app, dispose } = makeApp(initialState, { router })
   try {
-    await router.replace(url)
+    await router.replace(resolveServerRenderURL(router, url, initialState))
 
     if (shouldSimulateSlowSSR(url))
       blockFor(3500)

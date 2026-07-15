@@ -20,10 +20,11 @@ type payloadVisit struct {
 // nativePayloadValue 把常见 JSON 值复制成 goja 原生对象，避免 JS 反向修改 Go map/slice。
 // 遇到需要 json tag、MarshalJSON 等语义的类型时返回 native=false，由调用方回退 JSON.parse。
 func nativePayloadValue(rt *goja.Runtime, value any) (result goja.Value, native bool, err error) {
-	return nativePayloadValueAtDepth(rt, value, make(map[payloadVisit]struct{}), 0)
+	var visits [maxNativePayloadDepth + 1]payloadVisit
+	return nativePayloadValueAtDepth(rt, value, visits[:0], 0)
 }
 
-func nativePayloadValueAtDepth(rt *goja.Runtime, value any, seen map[payloadVisit]struct{}, depth int) (goja.Value, bool, error) {
+func nativePayloadValueAtDepth(rt *goja.Runtime, value any, seen []payloadVisit, depth int) (goja.Value, bool, error) {
 	if depth > maxNativePayloadDepth {
 		return nil, false, fmt.Errorf("SSR payload exceeds maximum nesting depth %d", maxNativePayloadDepth)
 	}
@@ -76,11 +77,12 @@ func nativePayloadValueAtDepth(rt *goja.Runtime, value any, seen map[payloadVisi
 		}
 		visit := payloadVisit{typ: reflect.TypeOf(typed), ptr: reflect.ValueOf(typed).Pointer()}
 		if visit.ptr != 0 {
-			if _, exists := seen[visit]; exists {
-				return nil, false, fmt.Errorf("cyclic SSR payload")
+			for _, ancestor := range seen {
+				if ancestor == visit {
+					return nil, false, fmt.Errorf("cyclic SSR payload")
+				}
 			}
-			seen[visit] = struct{}{}
-			defer delete(seen, visit)
+			seen = append(seen, visit)
 		}
 
 		object := rt.NewObject()
@@ -89,7 +91,12 @@ func nativePayloadValueAtDepth(rt *goja.Runtime, value any, seen map[payloadVisi
 			if err != nil || !native {
 				return nil, native, err
 			}
-			if err := object.DefineDataProperty(key, itemValue, goja.FLAG_TRUE, goja.FLAG_TRUE, goja.FLAG_TRUE); err != nil {
+			if key == "__proto__" {
+				err = object.DefineDataProperty(key, itemValue, goja.FLAG_TRUE, goja.FLAG_TRUE, goja.FLAG_TRUE)
+			} else {
+				err = object.Set(key, itemValue)
+			}
+			if err != nil {
 				return nil, false, err
 			}
 		}
@@ -100,11 +107,12 @@ func nativePayloadValueAtDepth(rt *goja.Runtime, value any, seen map[payloadVisi
 		}
 		visit := payloadVisit{typ: reflect.TypeOf(typed), ptr: reflect.ValueOf(typed).Pointer()}
 		if visit.ptr != 0 {
-			if _, exists := seen[visit]; exists {
-				return nil, false, fmt.Errorf("cyclic SSR payload")
+			for _, ancestor := range seen {
+				if ancestor == visit {
+					return nil, false, fmt.Errorf("cyclic SSR payload")
+				}
 			}
-			seen[visit] = struct{}{}
-			defer delete(seen, visit)
+			seen = append(seen, visit)
 		}
 
 		items := make([]any, len(typed))

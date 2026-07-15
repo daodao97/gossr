@@ -15,7 +15,11 @@ func TestExampleBundleRetainedHeap(t *testing.T) {
 	if os.Getenv("GOJS_HEAP_TEST") == "" {
 		t.Skip("set GOJS_HEAP_TEST=1 to run the retained-heap diagnostic")
 	}
-	t.Setenv("GOJA_RUNTIME_MAX_RENDERS", "1000")
+	maxRenders := os.Getenv("GOJS_HEAP_MAX_RENDERS")
+	if maxRenders == "" {
+		maxRenders = "200"
+	}
+	t.Setenv("GOJA_RUNTIME_MAX_RENDERS", maxRenders)
 
 	scriptPath := filepath.Join("..", "..", "..", "example", "web", "dist", "server", renderer.DefaultSSRScriptName)
 	scriptBytes, err := os.ReadFile(scriptPath)
@@ -107,6 +111,33 @@ func TestExampleBundleIsIsolatedAcrossReusedRuntime(t *testing.T) {
 			url:      "/session-demo",
 			payload:  map[string]any{"locale": "en", "session": map[string]any{"user": map[string]any{"email": "first@example.com"}}},
 			wantHTML: "first@example.com",
+		},
+		{
+			name:     "authenticated protected route",
+			url:      "/protected",
+			payload:  map[string]any{"locale": "en", "session": map[string]any{"user": map[string]any{"email": "protected@example.com"}}},
+			wantHTML: "protected@example.com",
+		},
+		{
+			name:        "anonymous protected route redirects every time",
+			url:         "/protected",
+			payload:     map[string]any{"locale": "en"},
+			wantHTML:    "Session",
+			rejectValue: "protected@example.com",
+		},
+		{
+			name:        "localized anonymous protected route redirects",
+			url:         "/zh/protected?tab=profile",
+			payload:     map[string]any{"locale": "zh"},
+			wantHTML:    "Session Cookie 示例",
+			rejectValue: "protected@example.com",
+		},
+		{
+			name:        "anonymous protected route with trailing slash redirects",
+			url:         "/protected/",
+			payload:     map[string]any{"locale": "en"},
+			wantHTML:    "Session Cookie Demo",
+			rejectValue: "protected@example.com",
 		},
 		{
 			name:        "anonymous request does not inherit session",

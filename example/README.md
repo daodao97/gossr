@@ -10,7 +10,7 @@
 - 通过 `web/embed.go` 使用 `embed.FS` 内嵌 `web/dist`
 - 在入口 `main.go` 调用 `gossr.SsrWithOptions(router, web.Dist, options)` 完成接入
 - 示例使用内置 gojs，不依赖 v8go
-- SSR 入口按 goja runtime 复用 Vue Router 匹配器，每个请求创建独立 app、数据上下文与鉴权 guard，并在渲染完成后移除 guard
+- SSR 入口按 goja runtime 复用 Vue Router 匹配器，每个请求创建独立 app 与数据上下文；服务端仅对可能受保护的 URL 做完整鉴权路由解析
 - 普通页面继续使用标准 `RouterLink`；只有高密度主菜单由 `AppNavigation` 内部使用原生链接和事件代理，业务组件不需要理解这项 SSR 优化
 
 ## 前置依赖
@@ -200,5 +200,5 @@ curl -H "Origin: http://127.0.0.1:8080" \
 - `SSR_RENDER_LIMIT`：限制 SSR 并发渲染数量
 - `ENABLE_PPROF`：开启 `/debug/pprof`（未设置时 dev 模式默认开启）
 - `HTTP_ACCESS_LOG`：是否启用 Gin 同步逐请求日志；release 默认关闭，debug 默认开启
-- `GOJA_RUNTIME_MAX_RENDERS`：单个 Goja runtime 的最大复用次数，默认 `1000`；复杂 Vue bundle 不建议设为 `0`
-- `GOGC`：宿主 Go GC 百分比；提高可降低 GC 频率，但会增加峰值内存，应通过压测选择
+- `GOJA_RUNTIME_MAX_RENDERS`：单个 Goja runtime 的最大复用次数，默认 `200`；复杂 Vue bundle 不建议设为 `0`
+- `GOGC` / `GOMEMLIMIT`：宿主 Go GC 配置；可优先实测 `GOGC=100/200/300`，再按容器余量设置内存软限制

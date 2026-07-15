@@ -65,13 +65,17 @@ export function navigationLinksFor(router: Router): readonly BaseNavigationLink[
   return links
 }
 
-function parsePathTarget(rawTarget: string): ParsedPathTarget {
-  let pathAndQuery = rawTarget
+export function parsePathTarget(rawTarget: string): ParsedPathTarget {
+  const target = rawTarget.trim()
+  if (!target)
+    return { pathname: '/', search: '', hash: '' }
+
+  let pathAndQuery = target
   let hash = ''
-  const hashIndex = rawTarget.indexOf('#')
+  const hashIndex = target.indexOf('#')
   if (hashIndex >= 0) {
-    pathAndQuery = rawTarget.slice(0, hashIndex)
-    hash = rawTarget.slice(hashIndex)
+    pathAndQuery = target.slice(0, hashIndex)
+    hash = target.slice(hashIndex)
   }
 
   let pathname = pathAndQuery
@@ -82,5 +86,10 @@ function parsePathTarget(rawTarget: string): ParsedPathTarget {
     search = pathAndQuery.slice(queryIndex)
   }
 
-  return { pathname: pathname || '/', search, hash }
+  if (!pathname)
+    pathname = '/'
+  if (!pathname.startsWith('/'))
+    pathname = `/${pathname}`
+
+  return { pathname, search, hash }
 }

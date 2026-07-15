@@ -20,7 +20,7 @@ const (
 	maxGojaPoolSize        = 512
 	defaultGojaPoolTimeout = 5 * time.Second
 	maxGojaPoolTimeout     = 30 * time.Second
-	defaultRuntimeMaxUses  = 1000
+	defaultRuntimeMaxUses  = 200
 	maxRuntimeMaxUses      = 1_000_000
 )
 
