@@ -44,7 +44,7 @@ export default defineConfig((env) => {
     build: {
       ssr: true,
       target: 'es2020',
-      minify: 'esbuild',
+      minify: 'oxc',
       rollupOptions: {
         input: {
           server: 'src/entry-server.ts',
@@ -52,7 +52,7 @@ export default defineConfig((env) => {
         output: {
           format: 'cjs',
           entryFileNames: '[name].js',
-          inlineDynamicImports: true,
+          codeSplitting: false,
         },
       },
     },

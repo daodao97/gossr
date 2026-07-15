@@ -16,6 +16,17 @@
 
 真实 bundle 的单线程热路径中位数从约 `0.978 ms/op、784 KB/op、10,365 allocs/op` 降至约 `0.870 ms/op、717 KB/op、9,542 allocs/op`：耗时降低约 11%，分配字节降低约 8.5%，分配次数降低约 7.9%。端到端收益更大，主要来自更合适的 runtime 回收与 GC 行为。
 
+## 最新前端依赖复测
+
+随后将直接依赖升级到 Vue `3.5.39`、Vue Router `5.2.0`、Vite `8.1.4`、Vitest `4.1.10`、TypeScript `7.0.2` 等 npm 当前最新版。TypeScript 7 配置移除了 `baseUrl`，Vite 8 改用 Oxc，并以 `codeSplitting: false` 生成 Goja 所需的单文件 bundle。
+
+- SSR bundle 从 `194,298` 字节降到 `189,919` 字节，约减少 2.3%。
+- 热渲染同机即时对比从约 `0.942 ms/op、716.6 KB/op、9,537 allocs/op` 变为约 `0.969 ms/op、719.8 KB/op、9,708 allocs/op`，解释器微基准约慢 3%。
+- 旧、新二进制交替 HTTP A/B 中，旧版两轮为 `2,474 / 2,450 req/s`，新版两轮为 `2,559 / 2,669 req/s`；新版端到端没有吞吐回退，但负载 RSS 约增加 16–20 MiB。
+- Terser 输出增加约 25 KB/op 和 250 allocs/op；外置 esbuild 输出更大且没有执行收益，均已拒绝，保留 Vite 8 推荐的 Oxc。
+
+bundle 增长首先影响每个 Goja runtime 的脚本解析、模块初始化和常驻内存；单次请求主要受当前匹配路由实际执行的组件树影响，不会与总 bundle 字节数等比例变慢。由于当前 SSR 为自包含单文件并在 runtime 回收后重新初始化，大型项目应持续记录 bundle 字节数、`BenchmarkRendererStartupExampleBundle` 和真实路由矩阵，而不能只观察 gzip 体积。
+
 ## 优化过程
 
 1. 建立真实基线并做 CPU/alloc profile。超过 90% 的分配来自 Goja 执行 Vue SSR，而非 Gin 或 HTML 注入；runtime 首次执行 bundle 约 `16.6 ms`，因此优化重点放在减少每次 Vue app 创建的工作和控制 runtime 保留堆。
@@ -38,7 +49,7 @@
 - 服务端完全取消鉴权解析：复用 router 连续访问相同保护 URL 时可能跳过 guard，存在 session 串请求风险；改为显式 `resolveServerRenderURL`。
 - 无限复用 runtime：即使正确 `unmount`，单 runtime 仍会随 Vue/Router 工作量持续增长；关闭回收的 3,800 次测试从约 `5 MiB` 增到约 `40 MiB`，生产不应设 `GOJA_RUNTIME_MAX_RENDERS=0`。
 - QuickJS：用相同 194 KB Vue bundle 实测，QuickJS-ng/CGO 热渲染约 `1.03–1.13 ms/op`，原生 Go 对象传参仍约 `1.03–1.13 ms/op`，runtime 初始化约 `37 ms`；Goja 分别约 `0.87 ms/op` 和 `16.6 ms`。QuickJS 的 Go heap 指标不包含 C 堆，不能直接比较内存，而且 quickjs-go 当前仍明确标注未准备好生产使用。因此不引入内置 QuickJS。参考 [quickjs-go README](https://github.com/buke/quickjs-go) 与 [QuickJS-ng](https://github.com/quickjs-ng/quickjs)。
-- 更新到另一版 Goja：此前试验使长期保留堆从约 12 MiB 墦到约 63 MiB，没有足够收益，已撤回。
+- 更新到另一版 Goja：此前试验使长期保留堆从约 12 MiB 增到约 63 MiB，没有足够收益，已撤回。
 
 ## 建议配置
 

@@ -2,6 +2,9 @@
   "name": "gossr-example-web",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 3333",
     "typecheck": "tsc --noEmit",
@@ -11,16 +14,16 @@
     "build:server": "vite build -c vite.config.server.ts --outDir ./dist/server --emptyOutDir"
   },
   "dependencies": {
-    "@vue/server-renderer": "^3.5.28",
-    "vue": "^3.5.28",
-    "vue-router": "^5.0.3"
+    "@vue/server-renderer": "^3.5.39",
+    "vue": "^3.5.39",
+    "vue-router": "^5.2.0"
   },
   "devDependencies": {
-    "@types/node": "^25.3.0",
-    "@vitejs/plugin-vue": "^6.0.4",
-    "happy-dom": "^20.8.3",
-    "typescript": "^5.9.3",
-    "vite": "^7.3.6",
-    "vitest": "^3.2.4"
+    "@types/node": "^26.1.1",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "happy-dom": "^20.10.6",
+    "typescript": "^7.0.2",
+    "vite": "^8.1.4",
+    "vitest": "^4.1.10"
   }
 }
