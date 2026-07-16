@@ -1,0 +1,51 @@
+package main
+
+import (
+	"log"
+	"time"
+
+	"github.com/daodao97/gossr"
+	"github.com/gin-gonic/gin"
+	frontend "__GOSSR_GO_MODULE__/web"
+)
+
+type homePayload struct {
+	Message     string
+	Path        string
+	GeneratedAt string
+}
+
+func (payload homePayload) AsMap() map[string]any {
+	return map[string]any{
+		"message":     payload.Message,
+		"path":        payload.Path,
+		"generatedAt": payload.GeneratedAt,
+	}
+}
+
+func main() {
+	data := gossr.NewDataEngine()
+	data.GET("/", gossr.WrapSSR(func(c *gin.Context) (gossr.SSRPayload, error) {
+		return homePayload{
+			Message:     "Hello from Go",
+			Path:        c.Request.URL.Path,
+			GeneratedAt: time.Now().Format(time.RFC3339),
+		}, nil
+	}))
+
+	router := gin.New()
+	router.Use(gin.Logger(), gin.Recovery())
+	if err := router.SetTrustedProxies(nil); err != nil {
+		log.Fatal(err)
+	}
+	if err := gossr.SsrWithOptions(router, frontend.Dist, gossr.Options{
+		DataEngine: data,
+	}); err != nil {
+		log.Fatal(err)
+	}
+
+	log.Println("gossr app is running at http://127.0.0.1:8080")
+	if err := router.Run("127.0.0.1:8080"); err != nil {
+		log.Fatal(err)
+	}
+}

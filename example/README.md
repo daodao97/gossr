@@ -15,7 +15,7 @@
 
 ## 前置依赖
 
-- Go `1.25+`
+- Go `1.25.8+`
 - Node.js `^20.19.0` 或 `>=22.12.0` + npm（用于 Vite 8 构建前端）
 - 可选：Docker + Docker Compose
 

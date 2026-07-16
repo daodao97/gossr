@@ -31,8 +31,42 @@ gossr/
 ├── renderer/
 │   ├── renderer.go          # 渲染器接口与工厂
 │   └── engine/gojs/         # 内置 goja 渲染器与 runtime 池
+├── cmd/gossr-init/          # Vue SSR 前端初始化器
 └── example/                 # 最小 Go + Vue 示例
 ```
+
+## 初始化完整项目
+
+无参数命令默认创建一个位于 `gossr-app/` 的完整 Gin + gossr + Vue SSR 项目：
+
+```bash
+go run github.com/daodao97/gossr/cmd/gossr-init@latest
+
+cd gossr-app/web
+npm install
+npm run build
+cd ..
+go mod tidy
+go run .
+```
+
+在终端中运行时会通过 `huh/v2` 表单引导选择模板，并填写输出目录、项目名、Go module 和前端 Go package；方向键选择、回车确认，每项都有默认值和即时校验，生成前还会显示完整配置。CI 或脚本中使用 `--yes` 跳过交互：
+
+```bash
+go run github.com/daodao97/gossr/cmd/gossr-init@latest --yes
+```
+
+默认 module 是 `example.com/gossr-app`。正式项目建议初始化时直接指定目录和 module：
+
+```bash
+go run github.com/daodao97/gossr/cmd/gossr-init@latest \
+  --dir my-app \
+  --module github.com/me/my-app
+```
+
+已有 Go 项目只需要前端时，可显式使用 `--template minimal --dir web`；`full` 在此基础上额外演示自动导航、布局与 Head 注入。鉴权、Session 与国际化继续由宿主项目决定，不成为脚手架的默认身份逻辑。
+
+初始化器默认不覆盖已有文件；可先用 `--dry-run` 检查。已有项目的逐步迁移、模板边界和参数说明见 [Vue 脚手架与迁移指南](docs/vue-scaffold.md)。
 
 ## 快速开始（仓库示例）
 
@@ -63,7 +97,7 @@ make dev
 
 ### 1) 依赖
 
-- Go `1.25+`
+- Go `1.25.8+`
 - 默认且唯一内置的引擎是基于 goja 的 `gojs`，不依赖 v8go 或系统 V8。
 
 ```bash
