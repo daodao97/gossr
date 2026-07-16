@@ -24,7 +24,9 @@ export default defineConfig(({ command }) => ({
     proxy: {
       '/_ssr/data': {
         target: 'http://127.0.0.1:8080',
-        changeOrigin: true,
+        // 保留浏览器访问 Vite 的 Host，使后端同源校验继续以
+        // http://127.0.0.1:3333 为公开 origin；只改变连接目标。
+        changeOrigin: false,
       },
     },
   },
