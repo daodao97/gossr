@@ -148,6 +148,7 @@ func (p *runtimePool) createRuntime() *runtimeContainer {
 	_ = global.Set("globalThis", global)
 	_ = global.Set("global", global)
 	installBase64Polyfills(rt, global)
+	installIntlPolyfill(rt, global)
 
 	// 注入 console polyfill (goja 默认不提供)
 	console := rt.NewObject()
