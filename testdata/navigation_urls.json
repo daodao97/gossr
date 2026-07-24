@@ -1,0 +1,117 @@
+{
+  "valid": [
+    {
+      "name": "root",
+      "input": "/",
+      "canonical": "/"
+    },
+    {
+      "name": "encoded slash",
+      "input": "/a%2Fb",
+      "canonical": "/a%2Fb"
+    },
+    {
+      "name": "force query",
+      "input": "/foo?",
+      "canonical": "/foo?"
+    },
+    {
+      "name": "raw query order and encoding",
+      "input": "/search?b=2&a=%2F&a=1",
+      "canonical": "/search?b=2&a=%2F&a=1"
+    },
+    {
+      "name": "encoded hash in query",
+      "input": "/search?q=%23hash",
+      "canonical": "/search?q=%23hash"
+    },
+    {
+      "name": "encoded space",
+      "input": "/search%20results?q=two%20words",
+      "canonical": "/search%20results?q=two%20words"
+    },
+    {
+      "name": "percent-encoded unicode",
+      "input": "/%E4%B8%AD%E6%96%87?name=%E6%B5%8B%E8%AF%95",
+      "canonical": "/%E4%B8%AD%E6%96%87?name=%E6%B5%8B%E8%AF%95"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "empty",
+      "input": ""
+    },
+    {
+      "name": "absolute URL",
+      "input": "https://evil.example/path"
+    },
+    {
+      "name": "protocol relative URL",
+      "input": "//evil.example/path"
+    },
+    {
+      "name": "relative path",
+      "input": "relative/path"
+    },
+    {
+      "name": "query without path",
+      "input": "?query=1"
+    },
+    {
+      "name": "leading whitespace",
+      "input": " /space"
+    },
+    {
+      "name": "raw path space",
+      "input": "/a b"
+    },
+    {
+      "name": "fragment",
+      "input": "/page#fragment"
+    },
+    {
+      "name": "raw backslash",
+      "input": "/a\\b"
+    },
+    {
+      "name": "encoded backslash",
+      "input": "/a%5Cb"
+    },
+    {
+      "name": "raw control",
+      "input": "/a\u0000b"
+    },
+    {
+      "name": "encoded control",
+      "input": "/a%00b"
+    },
+    {
+      "name": "raw dot segment",
+      "input": "/a/../b"
+    },
+    {
+      "name": "encoded dot segment",
+      "input": "/%2e%2e/b"
+    },
+    {
+      "name": "encoded dot and slash segment",
+      "input": "/%2e%2e%2fsecret"
+    },
+    {
+      "name": "encoded slash around dot segment",
+      "input": "/x%2F..%2Fy"
+    },
+    {
+      "name": "encoded protocol-relative path",
+      "input": "/%2F%2Fevil.example/path"
+    },
+    {
+      "name": "invalid percent escape",
+      "input": "/broken%"
+    },
+    {
+      "name": "encoded query control",
+      "input": "/page?next=%0d%0aHeader:value"
+    }
+  ]
+}

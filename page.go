@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/daodao97/gossr/renderer"
 )
@@ -88,6 +89,14 @@ type navigationErrorOutcome struct {
 	Message string `json:"message"`
 }
 
+// ParsePageTarget parses and validates an origin-relative page target using
+// the same strict rules applied to document requests, navigation requests, and
+// redirects. The returned URL preserves the original escaped path, raw query,
+// and trailing question mark.
+func ParsePageTarget(raw string) (url.URL, error) {
+	return parseRelativePageTarget(raw)
+}
+
 func normalizePageResult(result PageResult) (PageResult, error) {
 	if result.Cache != CacheNoStore && result.Cache != CachePrivateRevalidate {
 		return PageResult{}, fmt.Errorf("invalid cache policy %d", result.Cache)
@@ -141,14 +150,10 @@ func normalizeRedirect(redirect Redirect) (Redirect, error) {
 		return Redirect{}, fmt.Errorf("invalid redirect status %d", redirect.Status)
 	}
 
-	if redirect.Location != strings.TrimSpace(redirect.Location) ||
-		strings.ContainsAny(redirect.Location, "\r\n") ||
-		!strings.HasPrefix(redirect.Location, "/") ||
-		strings.HasPrefix(redirect.Location, "//") {
+	if redirect.Location != strings.TrimSpace(redirect.Location) {
 		return Redirect{}, fmt.Errorf("invalid redirect location %q", redirect.Location)
 	}
-	parsed, err := url.Parse(redirect.Location)
-	if err != nil || parsed.IsAbs() || parsed.Host != "" || parsed.User != nil || parsed.Opaque != "" {
+	if _, err := parseRelativePageTarget(redirect.Location); err != nil {
 		return Redirect{}, fmt.Errorf("invalid redirect location %q", redirect.Location)
 	}
 	return redirect, nil
@@ -158,26 +163,149 @@ func newDocumentPageRequest(req *http.Request) (PageRequest, error) {
 	if req == nil || req.URL == nil {
 		return PageRequest{}, fmt.Errorf("nil document request")
 	}
+	target, err := parseRelativePageTarget(requestTarget(req))
+	if err != nil {
+		return PageRequest{}, fmt.Errorf("invalid document target: %w", err)
+	}
 	return PageRequest{
 		Source: req,
-		URL:    cloneTargetURL(req.URL),
+		URL:    target,
 		Kind:   PageRequestDocument,
 	}, nil
 }
 
-func newNavigationPageRequest(req *http.Request, rawPath string) (PageRequest, error) {
+func newNavigationPageRequest(req *http.Request, _ string) (PageRequest, error) {
 	if req == nil || req.URL == nil {
 		return PageRequest{}, fmt.Errorf("nil navigation request")
 	}
-	target := url.URL{
-		Path:     ensureLeadingSlash(rawPath),
-		RawQuery: req.URL.RawQuery,
+	target, err := navigationTargetFromRequest(req)
+	if err != nil {
+		return PageRequest{}, err
 	}
 	return PageRequest{
 		Source: req,
 		URL:    target,
 		Kind:   PageRequestNavigation,
 	}, nil
+}
+
+func requestTarget(req *http.Request) string {
+	if req == nil {
+		return ""
+	}
+	if req.RequestURI != "" {
+		return req.RequestURI
+	}
+	if req.URL == nil {
+		return ""
+	}
+	return req.URL.RequestURI()
+}
+
+func navigationTargetFromRequest(req *http.Request) (url.URL, error) {
+	rawRequestTarget := requestTarget(req)
+	if rawRequestTarget == "" {
+		return url.URL{}, fmt.Errorf("empty navigation request target")
+	}
+	if strings.Contains(rawRequestTarget, "#") {
+		return url.URL{}, fmt.Errorf("navigation request target contains a fragment")
+	}
+
+	rawPath := rawRequestTarget
+	rawSuffix := ""
+	if queryAt := strings.IndexByte(rawRequestTarget, '?'); queryAt >= 0 {
+		rawPath = rawRequestTarget[:queryAt]
+		rawSuffix = rawRequestTarget[queryAt:]
+	}
+
+	var targetPath string
+	switch {
+	case rawPath == DefaultSSRDataRoute:
+		targetPath = "/"
+	case strings.HasPrefix(rawPath, DefaultSSRDataRoute+"/"):
+		targetPath = rawPath[len(DefaultSSRDataRoute):]
+	default:
+		return url.URL{}, fmt.Errorf("navigation target is outside %s", DefaultSSRDataRoute)
+	}
+
+	target, err := parseRelativePageTarget(targetPath + rawSuffix)
+	if err != nil {
+		return url.URL{}, fmt.Errorf("invalid navigation target: %w", err)
+	}
+	return target, nil
+}
+
+func parseRelativePageTarget(raw string) (url.URL, error) {
+	if raw == "" {
+		return url.URL{}, fmt.Errorf("empty relative URL")
+	}
+	if !strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") {
+		return url.URL{}, fmt.Errorf("relative URL must start with one slash")
+	}
+	if strings.Contains(raw, "#") {
+		return url.URL{}, fmt.Errorf("relative URL must not contain a fragment")
+	}
+	if err := validateURLText(raw); err != nil {
+		return url.URL{}, err
+	}
+
+	parsed, err := url.ParseRequestURI(raw)
+	if err != nil {
+		return url.URL{}, fmt.Errorf("parse relative URL: %w", err)
+	}
+	if parsed.IsAbs() || parsed.Host != "" || parsed.User != nil || parsed.Opaque != "" ||
+		parsed.Fragment != "" || parsed.RawFragment != "" {
+		return url.URL{}, fmt.Errorf("URL must be origin-relative")
+	}
+	if parsed.Path == "" || !strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") {
+		return url.URL{}, fmt.Errorf("URL path must start with one slash")
+	}
+	if err := validateDecodedURLText(parsed.Path); err != nil {
+		return url.URL{}, fmt.Errorf("invalid URL path: %w", err)
+	}
+	for _, segment := range strings.Split(parsed.Path, "/") {
+		if segment == "." || segment == ".." {
+			return url.URL{}, fmt.Errorf("URL path contains a dot segment")
+		}
+	}
+	decodedQuery, err := url.QueryUnescape(parsed.RawQuery)
+	if err != nil {
+		return url.URL{}, fmt.Errorf("invalid URL query: %w", err)
+	}
+	if err := validateDecodedURLText(decodedQuery); err != nil {
+		return url.URL{}, fmt.Errorf("invalid URL query: %w", err)
+	}
+	return *parsed, nil
+}
+
+func validateURLText(raw string) error {
+	if !utf8.ValidString(raw) {
+		return fmt.Errorf("URL is not valid UTF-8")
+	}
+	for _, value := range []byte(raw) {
+		if value <= 0x20 || value == 0x7f {
+			return fmt.Errorf("URL contains raw ASCII whitespace or a control character")
+		}
+		if value == '\\' {
+			return fmt.Errorf("URL contains a backslash")
+		}
+	}
+	return nil
+}
+
+func validateDecodedURLText(raw string) error {
+	if !utf8.ValidString(raw) {
+		return fmt.Errorf("decoded URL is not valid UTF-8")
+	}
+	for _, value := range []byte(raw) {
+		if value < 0x20 || value == 0x7f {
+			return fmt.Errorf("decoded URL contains an ASCII control character")
+		}
+		if value == '\\' {
+			return fmt.Errorf("decoded URL contains a backslash")
+		}
+	}
+	return nil
 }
 
 func cloneTargetURL(source *url.URL) url.URL {

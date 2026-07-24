@@ -231,7 +231,8 @@ type Options struct {
 	SSRFetchAuthorizer SSRFetchAuthorizer
 	// DataEngine 隔离当前 SSR 实例的数据路由；为空时兼容使用全局 SsrEngine。
 	DataEngine *gin.Engine
-	// SiteOrigin 固定规范站点 origin；为空时从经过校验的请求 Host 推断。
+	// SiteOrigin 固定规范站点 origin，并作为默认浏览器数据请求的同源边界；
+	// 为空时从经过校验的请求 Host 推断。
 	SiteOrigin string
 	// ShutdownContext 结束时释放实现 renderer.Closer 的内置或外部渲染器。
 	ShutdownContext context.Context
@@ -259,6 +260,10 @@ func SsrWithOptions(r *gin.Engine, dist fs.FS, options Options) error {
 	if err != nil {
 		return err
 	}
+	siteOrigin, err := normalizeSiteOrigin(options.SiteOrigin)
+	if err != nil {
+		return err
+	}
 
 	if options.PageResolver != nil {
 		if options.DataEngine != nil {
@@ -267,28 +272,36 @@ func SsrWithOptions(r *gin.Engine, dist fs.FS, options Options) error {
 		if options.SessionResolver != nil {
 			return errors.New("PageResolver and SessionResolver cannot be used together; resolve authentication in host middleware")
 		}
-		admission := newPageAdmission(renderConcurrencyLimit(), defaultPageRequestTimeout)
-		if err := runBlocking(
-			r,
-			FrontendBuild{
-				FrontendDist:         frontendFs,
-				ServerDist:           serverFs,
-				PageResolver:         options.PageResolver,
-				ExcludedPathPrefixes: append([]string(nil), options.ExcludedPathPrefixes...),
-				pageAdmission:        admission,
-				RendererFactory:      options.RendererFactory,
-				SiteOrigin:           options.SiteOrigin,
-				ShutdownContext:      options.ShutdownContext,
-			},
-			nil,
-		); err != nil {
-			return err
+		if options.ShutdownContext != nil && options.ShutdownContext.Err() != nil {
+			return fmt.Errorf("shutdown context is already done: %w", options.ShutdownContext.Err())
 		}
-		siteOrigin, err := normalizeSiteOrigin(options.SiteOrigin)
+
+		compatibilityConcurrency := compatibilityPageConcurrency()
+		runtime, err := newRuntime(Config{
+			Bundle:             dist,
+			SiteOrigin:         siteOrigin,
+			Mode:               ModeAuto,
+			RendererFactory:    options.RendererFactory,
+			MaxConcurrentPages: compatibilityConcurrency,
+		}, compatibilityConcurrency == 0)
 		if err != nil {
 			return err
 		}
-		mountPageResolverRoutes(r, options.PageResolver, options.SSRFetchAuthorizer, siteOrigin, admission)
+		if err := runtime.MountGin(r, GinOptions{
+			Resolver:             options.PageResolver,
+			ExcludedPathPrefixes: options.ExcludedPathPrefixes,
+			SSRFetchAuthorizer:   options.SSRFetchAuthorizer,
+		}); err != nil {
+			_ = runtime.Close()
+			return err
+		}
+		if options.ShutdownContext != nil {
+			context.AfterFunc(options.ShutdownContext, func() {
+				if err := runtime.Close(); err != nil {
+					log.Printf("close SSR runtime failed: %v", err)
+				}
+			})
+		}
 		return nil
 	}
 
@@ -303,15 +316,36 @@ func SsrWithOptions(r *gin.Engine, dist fs.FS, options Options) error {
 			ServerDist:      serverFs,
 			RendererFactory: options.RendererFactory,
 			SessionResolver: options.SessionResolver,
-			SiteOrigin:      options.SiteOrigin,
+			SiteOrigin:      siteOrigin,
 			ShutdownContext: options.ShutdownContext,
 		},
 		dataFetcherForEngine(engine),
 	); err != nil {
 		return err
 	}
-	mountSSRFetchRoutes(r, engine, options.SSRFetchAuthorizer)
+	alternateOrigins := []string(nil)
+	if isDevMode() {
+		if parsedDevServerURL, parseErr := url.Parse(devServerURL()); parseErr == nil {
+			if devOrigin, ok := canonicalOrigin(
+				parsedDevServerURL.Scheme,
+				parsedDevServerURL.Host,
+			); ok {
+				alternateOrigins = append(alternateOrigins, devOrigin)
+			}
+		}
+	}
+	mountSSRFetchRoutes(
+		r,
+		engine,
+		options.SSRFetchAuthorizer,
+		siteOrigin,
+		alternateOrigins...,
+	)
 	return nil
+}
+
+func compatibilityPageConcurrency() int {
+	return renderConcurrencyLimit()
 }
 
 func mountPageResolverRoutes(
@@ -322,9 +356,13 @@ func mountPageResolverRoutes(
 	admission *pageAdmission,
 ) {
 	handler := pageResolverNavigationHandler(resolver, configuredSiteOrigin, admission)
+	guardAuthorizer := configuredSSRFetchAuthorizer(
+		authorizer,
+		configuredSiteOrigin,
+	)
 	group := r.Group(DefaultSSRDataRoute)
-	group.GET("", ssrDataNoStoreMiddleware(), ssrGuardMiddleware(authorizer), handler)
-	group.GET("/*path", ssrDataNoStoreMiddleware(), ssrGuardMiddleware(authorizer), handler)
+	group.GET("", ssrDataNoStoreMiddleware(), ssrGuardMiddleware(guardAuthorizer), handler)
+	group.GET("/*path", ssrDataNoStoreMiddleware(), ssrGuardMiddleware(guardAuthorizer), handler)
 }
 
 func pageResolverNavigationHandler(
@@ -406,13 +444,27 @@ func registerSSRFetchRoutesWithAuthorizer(r *gin.Engine, engine *gin.Engine, aut
 	if engine == nil {
 		engine = SsrEngine
 	}
-	mountSSRFetchRoutes(r, engine, authorizer)
+	mountSSRFetchRoutes(r, engine, authorizer, "")
 	return dataFetcherForEngine(engine)
 }
 
-func mountSSRFetchRoutes(r *gin.Engine, engine *gin.Engine, authorizer SSRFetchAuthorizer) {
+func mountSSRFetchRoutes(
+	r *gin.Engine,
+	engine *gin.Engine,
+	authorizer SSRFetchAuthorizer,
+	configuredSiteOrigin string,
+	alternateOrigins ...string,
+) {
 	group := r.Group(DefaultSSRDataRoute)
-	RouterWithEngineAndAuthorizer(group, engine, authorizer)
+	RouterWithEngineAndAuthorizer(
+		group,
+		engine,
+		configuredSSRFetchAuthorizer(
+			authorizer,
+			configuredSiteOrigin,
+			alternateOrigins...,
+		),
+	)
 }
 
 func dataFetcherForEngine(engine *gin.Engine) BackendDataFetcher {
@@ -471,6 +523,56 @@ func DefaultSSRFetchAuthorizer(r *http.Request) (int, bool) {
 	return http.StatusForbidden, false
 }
 
+func configuredSSRFetchAuthorizer(
+	authorizer SSRFetchAuthorizer,
+	configuredSiteOrigin string,
+	alternateOrigins ...string,
+) SSRFetchAuthorizer {
+	if authorizer != nil {
+		return authorizer
+	}
+
+	targetOrigins := make([]string, 0, 1+len(alternateOrigins))
+	addTargetOrigin := func(raw string) {
+		if raw == "" {
+			return
+		}
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			return
+		}
+		targetOrigin, ok := canonicalOrigin(parsed.Scheme, parsed.Host)
+		if !ok {
+			return
+		}
+		for _, existing := range targetOrigins {
+			if existing == targetOrigin {
+				return
+			}
+		}
+		targetOrigins = append(targetOrigins, targetOrigin)
+	}
+	addTargetOrigin(configuredSiteOrigin)
+	for _, alternateOrigin := range alternateOrigins {
+		addTargetOrigin(alternateOrigin)
+	}
+	if len(targetOrigins) == 0 {
+		return authorizer
+	}
+
+	return func(r *http.Request) (int, bool) {
+		if configuredSiteOrigin == "" && sameOriginRequest(r) {
+			return 0, true
+		}
+		for _, targetOrigin := range targetOrigins {
+			if sameOriginRequestAgainst(r, targetOrigin) {
+				return 0, true
+			}
+		}
+		return http.StatusForbidden, false
+	}
+}
+
 func sameOriginRequest(r *http.Request) bool {
 	if r == nil {
 		return false
@@ -479,7 +581,13 @@ func sameOriginRequest(r *http.Request) bool {
 	if !ok {
 		return false
 	}
+	return sameOriginRequestAgainst(r, targetOrigin)
+}
 
+func sameOriginRequestAgainst(r *http.Request, targetOrigin string) bool {
+	if r == nil || targetOrigin == "" {
+		return false
+	}
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		origin = r.Header.Get("Referer")

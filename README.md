@@ -32,9 +32,27 @@ gossr/
 ├── renderer/
 │   ├── renderer.go          # 渲染器接口与工厂
 │   └── engine/gojs/         # 内置 goja 渲染器与 runtime 池
+├── packages/gossr-vue/      # Vue runtime、client/server 入口与 Vite presets
 ├── cmd/gossr-init/          # Vue SSR 前端初始化器
 └── example/                 # 最小 Go + Vue 示例
 ```
+
+## Vue runtime
+
+`packages/gossr-vue` 提供与业务无关的 Vue SSR 生命周期、导航协议以及
+Vite/Goja 构建约定。迁移期可由 pnpm 直接锁定仓库提交和包目录：
+
+```json
+{
+  "dependencies": {
+    "@daodao97/gossr-vue": "github:daodao97/gossr#<full-commit-sha>&path:/packages/gossr-vue"
+  }
+}
+```
+
+业务应用只定义根组件、路由、页面文档 codec 和可选的应用级 setup；client
+bootstrap、每请求 SSR app、router/history、导航协调器与清理顺序由该包负责。
+具体接口见 `packages/gossr-vue/README.md`。
 
 ## 初始化完整项目
 
@@ -126,13 +144,14 @@ dist/
   return {
     html: `<div>${url}: ${snapshot.message}</div>`,
     head: "<title>My SSR Page</title>",
-    status: 200,
   }
 }
 ```
 
 v2 请求数据只通过函数参数传递。旧 bundle 的 `ssrRender(url)`、
-`__SSR_DATA__` 与 `__SSR_HEAD__` 仍由兼容 adapter 支持。
+`__SSR_DATA__`、`__SSR_HEAD__` 以及结构化结果中的 `status/redirect`
+仍由兼容 adapter 解码；typed `PageResolver` 路径以 `PageResult` 为 HTTP
+状态和跳转的唯一权威，renderer 不得覆盖。
 
 ### 3) 内嵌前端产物
 
@@ -148,27 +167,49 @@ var Dist embed.FS
 ### 4) 注册 typed PageResolver（推荐）
 
 ```go
-type snapshot map[string]any
-
-func (s snapshot) AsMap() map[string]any { return s }
+type snapshot struct {
+  SchemaVersion int            `json:"schema_version"`
+  URL           string         `json:"url"`
+  Context       map[string]any `json:"context"`
+}
 
 func resolvePage(ctx context.Context, request gossr.PageRequest) (gossr.PageResult, error) {
   // principal 应由真实 Gin middleware 校验后放入 request.Source.Context()。
+  payload, err := gossr.ObjectPayload(snapshot{
+    SchemaVersion: 1,
+    URL: request.URL.RequestURI(),
+    Context: map[string]any{"site_origin": request.SiteOrigin},
+  })
+  if err != nil {
+    return gossr.PageResult{}, err
+  }
   return gossr.PageResult{
-    Payload: snapshot{
-      "schema_version": 1,
-      "url": request.URL.RequestURI(),
-      "context": map[string]any{"site_origin": request.SiteOrigin},
-    },
+    Payload: payload,
   }, nil
 }
 
-if err := gossr.SsrWithOptions(r, web.Dist, gossr.Options{
-  PageResolver: resolvePage,
+ssrRuntime, err := gossr.New(gossr.Config{
+  Bundle: web.Dist,
   SiteOrigin: "https://www.example.com",
+  Mode: gossr.ModeAuto,
+  PageTimeout: 3 * time.Second,
+})
+if err != nil {
+  log.Fatal(err)
+}
+
+if err := ssrRuntime.MountGin(r, gossr.GinOptions{
+  Resolver: resolvePage,
   ExcludedPathPrefixes: []string{"/api", "/backend", "/admin"},
 }); err != nil {
+  _ = ssrRuntime.Close()
   log.Fatal(err)
+}
+
+// 先停止接收 HTTP 请求并完成 drain，再释放 SSR runtime。
+serveAndDrain(r)
+if err := ssrRuntime.Close(); err != nil {
+  log.Printf("close SSR runtime: %v", err)
 }
 ```
 
@@ -176,6 +217,15 @@ if err := gossr.SsrWithOptions(r, web.Dist, gossr.Options{
 HTTP recorder。签名校验等已知的 Cookie mutation 应优先由注册在 gossr 之前的真实
 Gin middleware 完成；若只有异步页面解析才能确认会话失效，可通过
 `PageResult.Cookies` 返回经过校验的 Cookie。resolver 不拥有任意 response headers。
+
+`New` 在修改 Gin 之前验证生产 bundle、HTML 模板和 renderer；开发模式只初始化
+Vite proxy，不要求生产 bundle。`MountGin` 只能调用一次并接管 `NoRoute`，因此宿主
+API、后台和 metrics 路由必须先注册。`Close` 会拒绝新页面请求、取消并等待队列/
+resolver/renderer 中的请求退出，最后幂等关闭 renderer。旧项目可继续使用
+`SsrWithOptions`，typed 路径内部会委托同一个 Runtime。若 `MountGin` 因 Gin 路由
+冲突返回错误，传入的 router 可能已被部分修改，必须连同已关闭的 Runtime 一起丢弃。
+生产模板必须有且只有一个 `id="app"`，并把唯一的 `<!--app-html-->` 作为它的直接
+子占位；`data-ssr` 与 `__GOSSR_BOOT__` 均由 Runtime 注入，模板不得预置。
 
 HTML fallback 只接受 `GET/HEAD` 且 `Accept` 明确包含 HTML 的请求。成功 SSR 会注入
 `<script id="__GOSSR_BOOT__" type="application/json">` 和
@@ -380,6 +430,9 @@ err := gossr.SsrWithOptions(r, web.Dist, gossr.Options{
 ## `/_ssr/data` 访问保护
 
 - 默认按完整 origin 校验（scheme、规范化 host、有效端口均一致；默认端口等价）；无 referrer 时支持浏览器的 `Sec-Fetch-Site: same-origin`。
+- `Runtime` / `SsrWithOptions` 配置 `SiteOrigin` 后，以该 public origin 为默认边界，而不是内部 request Host；因此 TLS 终止代理不需要为了此项校验而信任 `X-Forwarded-*`。
+- 开发模式还会接受显式 `DevServerURL`（或 `DEV_SERVER_URL`）的 origin，Vite 直连与经 Go 代理访问都可工作；生产模式不会放行该开发 origin。
+- 未配置 `SiteOrigin` 时才回退到当前 request origin。
 - `/_ssr/data` 响应默认只返回业务 payload + 路由上下文（如 `locale/siteOrigin`），不会自动附带 `session`。
 - `Router` / `RouterWithEngine` 自带相同的 guard，成功和错误响应均使用 `no-store`，直接挂载不会绕过保护。
 - 需要额外身份验证或服务间调用时，通过 `Options.SSRFetchAuthorizer` 注入宿主授权逻辑；gossr 不保存或分发共享密钥。

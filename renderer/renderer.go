@@ -26,8 +26,9 @@ func Close(instance Renderer) error {
 // 外部引擎可通过实现 Renderer 并提供 Factory 注入。
 type Factory func(scriptContents string) Renderer
 
-// Redirect is the only renderer-controlled HTTP mutation. Header ownership
-// remains with the Go orchestrator.
+// Redirect is retained for compatibility with legacy structured bundles.
+// Typed PageResolver orchestration rejects renderer redirects because
+// PageResult is authoritative for HTTP intent.
 type Redirect struct {
 	Status   int    `json:"status"`
 	Location string `json:"location"`
@@ -35,8 +36,8 @@ type Redirect struct {
 
 // Result is the structured output of one SSR render.
 //
-// Status is optional; zero leaves the resolver status unchanged. Redirect is
-// also optional and is validated by the orchestrator before it is written.
+// Status and Redirect are legacy ABI fields. In a typed PageResolver flow,
+// Status must be zero or match PageResult.Status and Redirect must be nil.
 type Result struct {
 	HTML     string
 	Head     string

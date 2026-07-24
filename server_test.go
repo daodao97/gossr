@@ -276,6 +276,79 @@ func TestInjectHeadContentReplacesTemplateTitle(t *testing.T) {
 	}
 }
 
+func TestApplyHTMLLangUsesTheStructuralHTMLTag(t *testing.T) {
+	html := `<script>const fake = "<html lang='script'>"</script>` +
+		`<HTML LANG='en' data-shell="true"><head></head><body></body></HTML>`
+	result := applyHTMLLang(html, "zh-CN")
+	if !strings.Contains(result, `const fake = "<html lang='script'>"`) {
+		t.Fatalf("script text was changed: %s", result)
+	}
+	if strings.Count(strings.ToLower(result), `lang=`) != 2 {
+		t.Fatalf("structural html tag gained duplicate lang attributes: %s", result)
+	}
+	if !strings.Contains(result, `lang="zh-CN"`) {
+		t.Fatalf("structural html lang was not updated: %s", result)
+	}
+}
+
+func TestStructuralHeadAndBootInjectionIgnoreScriptText(t *testing.T) {
+	const script = `<script>` +
+		`const fakeHead = "</head>";` +
+		`const fakeBody = "</body>";` +
+		`const fakeTitle = "<title>script title</title>";` +
+		`</script>`
+	html := `<!doctype html><html><head>` + script +
+		`<title>template title</title></head><body><main>page</main>` +
+		`<svg><title>icon title</title></svg></body></html>`
+
+	withHead := injectHeadContent(
+		html,
+		`<title>route title</title><meta name="description" content="route">`,
+	)
+	if !strings.Contains(withHead, script) {
+		t.Fatalf("head injection changed script text: %s", withHead)
+	}
+	if strings.Contains(withHead, "<title>template title</title>") {
+		t.Fatalf("head injection retained the structural template title: %s", withHead)
+	}
+	if !strings.Contains(withHead, "<svg><title>icon title</title></svg>") {
+		t.Fatalf("head injection removed an accessible SVG title: %s", withHead)
+	}
+	if !strings.Contains(withHead, "<title>route title</title>") {
+		t.Fatalf("head injection omitted the route title: %s", withHead)
+	}
+	if strings.Index(withHead, "<title>route title</title>") <
+		strings.Index(withHead, "</script>") {
+		t.Fatalf("head content was injected into script text: %s", withHead)
+	}
+
+	withBoot, err := injectSSRBootData(withHead, map[string]any{"ok": true})
+	if err != nil {
+		t.Fatalf("injectSSRBootData: %v", err)
+	}
+	if !strings.Contains(withBoot, script) {
+		t.Fatalf("boot injection changed script text: %s", withBoot)
+	}
+	bootAt := strings.Index(withBoot, `id="__GOSSR_BOOT__"`)
+	if bootAt < strings.Index(withBoot, "</script>") ||
+		bootAt > strings.LastIndex(withBoot, "</head>") {
+		t.Fatalf("boot data was not inserted before the structural head end: %s", withBoot)
+	}
+
+	withLegacyData, err := injectSSRData(html, map[string]any{"ok": true})
+	if err != nil {
+		t.Fatalf("injectSSRData: %v", err)
+	}
+	if !strings.Contains(withLegacyData, script) {
+		t.Fatalf("legacy data injection changed script text: %s", withLegacyData)
+	}
+	legacyDataAt := strings.Index(withLegacyData, `id="ssr-data"`)
+	if legacyDataAt < strings.Index(withLegacyData, "</script>") ||
+		legacyDataAt > strings.LastIndex(withLegacyData, "</head>") {
+		t.Fatalf("legacy data was not inserted before the structural head end: %s", withLegacyData)
+	}
+}
+
 func TestNewDevProxyRejectsInvalidURL(t *testing.T) {
 	for _, rawURL := range []string{"localhost:3333", "ftp://example.com", "://bad"} {
 		t.Run(rawURL, func(t *testing.T) {

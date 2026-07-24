@@ -16,7 +16,6 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -68,36 +67,32 @@ const (
 	cacheShortRootFile  = "public, max-age=86400"
 )
 
-var (
-	langAttributePattern = regexp.MustCompile(`lang="[^"]*"`)
-	titleElementPattern  = regexp.MustCompile(`(?is)<title(?:\s[^>]*)?>.*?</title>\s*`)
-	staticAssetExts      = map[string]struct{}{
-		".avif":        {},
-		".br":          {},
-		".css":         {},
-		".eot":         {},
-		".gif":         {},
-		".gz":          {},
-		".ico":         {},
-		".jpeg":        {},
-		".jpg":         {},
-		".js":          {},
-		".map":         {},
-		".mjs":         {},
-		".otf":         {},
-		".pdf":         {},
-		".png":         {},
-		".svg":         {},
-		".ttf":         {},
-		".txt":         {},
-		".webmanifest": {},
-		".webp":        {},
-		".wasm":        {},
-		".woff":        {},
-		".woff2":       {},
-		".xml":         {},
-	}
-)
+var staticAssetExts = map[string]struct{}{
+	".avif":        {},
+	".br":          {},
+	".css":         {},
+	".eot":         {},
+	".gif":         {},
+	".gz":          {},
+	".ico":         {},
+	".jpeg":        {},
+	".jpg":         {},
+	".js":          {},
+	".map":         {},
+	".mjs":         {},
+	".otf":         {},
+	".pdf":         {},
+	".png":         {},
+	".svg":         {},
+	".ttf":         {},
+	".txt":         {},
+	".webmanifest": {},
+	".webp":        {},
+	".wasm":        {},
+	".woff":        {},
+	".woff2":       {},
+	".xml":         {},
+}
 
 func RunBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher BackendDataFetcher) {
 	if err := runBlocking(router, frontendBuild, fetcher); err != nil {
@@ -263,7 +258,15 @@ func runBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher Backen
 				return
 			}
 
-			page := strings.Replace(indexHTML, "<!--app-html-->", result.HTML, 1)
+			page, replaceErr := replaceAppHTMLMarker(indexHTML, result.HTML)
+			if replaceErr != nil {
+				log.Printf("replace SSR app marker failed id=%s path=%q err=%q", reqID, c.Request.URL.Path, replaceErr)
+				page = buildFallbackPage(indexHTML, nil, locale, reqID)
+				setHTMLNoCacheHeaders(c)
+				c.Header("Content-Type", "text/html")
+				c.String(http.StatusInternalServerError, page)
+				return
+			}
 			if locale != "" {
 				page = applyHTMLLang(page, locale)
 			}
@@ -291,6 +294,28 @@ func handlePageDocument(
 	excludedPrefixes []string,
 	configuredSiteOrigin string,
 ) {
+	handlePageDocumentWithRenderTimeout(
+		c,
+		indexHTML,
+		ssr,
+		admission,
+		resolver,
+		excludedPrefixes,
+		configuredSiteOrigin,
+		defaultPageRequestTimeout,
+	)
+}
+
+func handlePageDocumentWithRenderTimeout(
+	c *gin.Context,
+	indexHTML string,
+	ssr renderer.Renderer,
+	admission *pageAdmission,
+	resolver PageResolver,
+	excludedPrefixes []string,
+	configuredSiteOrigin string,
+	renderTimeout time.Duration,
+) {
 	if !shouldHandleDocument(c.Request, excludedPrefixes) {
 		c.Status(http.StatusNotFound)
 		return
@@ -307,7 +332,8 @@ func handlePageDocument(
 
 	pageRequest, err := newDocumentPageRequest(c.Request)
 	if err != nil {
-		c.Status(http.StatusInternalServerError)
+		setHTMLNoCacheHeaders(c)
+		c.Status(http.StatusBadRequest)
 		return
 	}
 	pageRequest.SiteOrigin = configuredSiteOrigin
@@ -337,7 +363,7 @@ func handlePageDocument(
 		ssr,
 		targetRequestURI(pageRequest),
 		payload,
-		3*time.Second,
+		renderTimeout,
 		nil,
 	)
 	if renderErr != nil {
@@ -359,8 +385,20 @@ func handlePageDocument(
 		return
 	}
 
-	page := strings.Replace(indexHTML, "<!--app-html-->", rendered.HTML, 1)
-	page = markSSRApp(page)
+	page, err := markSSRApp(indexHTML)
+	if err != nil {
+		log.Printf("mark SSR app failed id=%s path=%q err=%q", reqID, c.Request.URL.Path, err)
+		page = buildPageFallback(indexHTML, nil, locale, reqID)
+		writeHTMLDocument(c, http.StatusInternalServerError, page)
+		return
+	}
+	page, err = replaceAppHTMLMarker(page, rendered.HTML)
+	if err != nil {
+		log.Printf("replace SSR app marker failed id=%s path=%q err=%q", reqID, c.Request.URL.Path, err)
+		page = buildPageFallback(indexHTML, nil, locale, reqID)
+		writeHTMLDocument(c, http.StatusInternalServerError, page)
+		return
+	}
 	if locale != "" {
 		page = applyHTMLLang(page, locale)
 	}
@@ -390,40 +428,17 @@ func resolvePage(ctx context.Context, resolver PageResolver, request PageRequest
 }
 
 func mergeRenderOutcome(page PageResult, rendered renderer.Result) (int, *Redirect, error) {
-	status := page.Status
 	if rendered.Redirect != nil {
-		redirect, err := normalizeRedirect(*rendered.Redirect)
-		if err != nil {
-			return 0, nil, err
-		}
-		if page.Status != http.StatusOK {
-			return 0, nil, fmt.Errorf("renderer redirect conflicts with resolver status %d", page.Status)
-		}
-		if rendered.Status != 0 && rendered.Status != redirect.Status {
-			return 0, nil, fmt.Errorf(
-				"renderer status %d conflicts with redirect status %d",
-				rendered.Status,
-				redirect.Status,
-			)
-		}
-		return redirect.Status, &redirect, nil
+		return 0, nil, errors.New("typed renderer must not return a redirect")
 	}
-
-	if rendered.Status == 0 {
-		return status, nil, nil
-	}
-	renderStatus, err := normalizePageResult(PageResult{Status: rendered.Status})
-	if err != nil {
-		return 0, nil, fmt.Errorf("invalid renderer status: %w", err)
-	}
-	if page.Status != http.StatusOK && page.Status != renderStatus.Status {
+	if rendered.Status != 0 && rendered.Status != page.Status {
 		return 0, nil, fmt.Errorf(
 			"renderer status %d conflicts with resolver status %d",
-			renderStatus.Status,
+			rendered.Status,
 			page.Status,
 		)
 	}
-	return renderStatus.Status, nil, nil
+	return page.Status, nil, nil
 }
 
 func setPageCacheHeaders(c *gin.Context, policy CachePolicy) {
@@ -457,16 +472,6 @@ func writeHTMLDocument(c *gin.Context, status int, page string) {
 	c.Data(status, "text/html; charset=utf-8", []byte(page))
 }
 
-func markSSRApp(page string) string {
-	for _, id := range []string{`id="app"`, `id='app'`} {
-		if !strings.Contains(page, id) {
-			continue
-		}
-		return strings.Replace(page, id, id+` data-ssr="true"`, 1)
-	}
-	return page
-}
-
 func injectSSRBootData(page string, payload map[string]any) (string, error) {
 	if payload == nil {
 		payload = map[string]any{}
@@ -477,21 +482,36 @@ func injectSSRBootData(page string, payload map[string]any) (string, error) {
 	}
 
 	const bootID = "__GOSSR_BOOT__"
-	if strings.Contains(page, `id="`+bootID+`"`) {
+	hasBootElement, err := documentHasElementID(page, bootID)
+	if err != nil {
+		return page, fmt.Errorf("inspect SSR document: %w", err)
+	}
+	if hasBootElement {
 		return page, fmt.Errorf("document already contains %s", bootID)
 	}
 	script := `<script id="` + bootID + `" type="application/json">` + string(jsonData) + `</script>`
-	if strings.Contains(page, "</head>") {
-		return strings.Replace(page, "</head>", script+"</head>", 1), nil
+	withBoot, found, err := insertBeforeHTMLElementEnd(page, "head", script)
+	if err != nil {
+		return page, err
 	}
-	if strings.Contains(page, "</body>") {
-		return strings.Replace(page, "</body>", script+"</body>", 1), nil
+	if found {
+		return withBoot, nil
+	}
+	withBoot, found, err = insertBeforeHTMLElementEnd(page, "body", script)
+	if err != nil {
+		return page, err
+	}
+	if found {
+		return withBoot, nil
 	}
 	return page + script, nil
 }
 
 func buildPageFallback(indexHTML string, payload map[string]any, locale string, reqID string) string {
-	page := strings.Replace(indexHTML, "<!--app-html-->", "", 1)
+	page, err := replaceAppHTMLMarker(indexHTML, "")
+	if err != nil {
+		page = indexHTML
+	}
 	if locale != "" {
 		page = applyHTMLLang(page, locale)
 	}
@@ -531,13 +551,13 @@ func applyHTMLLang(html string, locale string) string {
 		return html
 	}
 
-	replacement := fmt.Sprintf(`lang="%s"`, locale)
-	if langAttributePattern.MatchString(html) {
-		return langAttributePattern.ReplaceAllString(html, replacement)
-	}
-
-	if strings.Contains(html, "<html") {
-		return strings.Replace(html, "<html", "<html "+replacement, 1)
+	if updated, found, err := setHTMLElementAttribute(
+		html,
+		"html",
+		"lang",
+		locale,
+	); err == nil && found {
+		return updated
 	}
 
 	return html
@@ -549,8 +569,14 @@ func injectHeadContent(html string, head string) string {
 	}
 	// SSR head 中的 title 对当前路由具有权威性，模板默认 title 必须移除，
 	// 否则浏览器和搜索引擎通常会采用第一个旧标题。
-	if titleElementPattern.MatchString(head) {
-		html = titleElementPattern.ReplaceAllString(html, "")
+	if hasTitle, err := documentHasHTMLElement(head, "title"); err == nil && hasTitle {
+		if withoutTitles, removeErr := removeHTMLElementsWithin(
+			html,
+			"title",
+			"head",
+		); removeErr == nil {
+			html = withoutTitles
+		}
 	}
 
 	injection := head
@@ -558,8 +584,8 @@ func injectHeadContent(html string, head string) string {
 		injection += "\n"
 	}
 
-	if strings.Contains(html, "</head>") {
-		return strings.Replace(html, "</head>", injection+"</head>", 1)
+	if injected, found, err := insertBeforeHTMLElementEnd(html, "head", injection); err == nil && found {
+		return injected
 	}
 
 	return injection + html
@@ -578,12 +604,19 @@ func injectSSRData(html string, payload map[string]any) (string, error) {
 	escaped := template.JSEscapeString(string(jsonData))
 	script := fmt.Sprintf(`<script id="ssr-data">window.__SSR_DATA__=JSON.parse("%s")</script>`, escaped)
 
-	if strings.Contains(html, "</head>") {
-		return strings.Replace(html, "</head>", script+"</head>", 1), nil
+	injected, found, err := insertBeforeHTMLElementEnd(html, "head", script)
+	if err != nil {
+		return html, err
 	}
-
-	if strings.Contains(html, "</body>") {
-		return strings.Replace(html, "</body>", script+"</body>", 1), nil
+	if found {
+		return injected, nil
+	}
+	injected, found, err = insertBeforeHTMLElementEnd(html, "body", script)
+	if err != nil {
+		return html, err
+	}
+	if found {
+		return injected, nil
 	}
 
 	return html + script, nil
@@ -883,6 +916,22 @@ func buildDevProxy(rawURL string) (*httputil.ReverseProxy, error) {
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(parsed)
+	director := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		originalHost := req.Host
+		originalScheme := "http"
+		if req.TLS != nil {
+			originalScheme = "https"
+		}
+		director(req)
+		req.Host = parsed.Host
+		if req.Header.Get("X-Forwarded-Host") == "" && originalHost != "" {
+			req.Header.Set("X-Forwarded-Host", originalHost)
+		}
+		if req.Header.Get("X-Forwarded-Proto") == "" {
+			req.Header.Set("X-Forwarded-Proto", originalScheme)
+		}
+	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		log.Printf("dev proxy error: %q", err)
 		http.Error(w, "dev server unavailable", http.StatusBadGateway)
@@ -1055,7 +1104,10 @@ func setHTMLNoCacheHeaders(c *gin.Context) {
 }
 
 func buildFallbackPage(indexHTML string, payload map[string]any, locale string, reqID string) string {
-	page := strings.Replace(indexHTML, "<!--app-html-->", "", 1)
+	page, err := replaceAppHTMLMarker(indexHTML, "")
+	if err != nil {
+		page = indexHTML
+	}
 	if locale != "" {
 		page = applyHTMLLang(page, locale)
 	}

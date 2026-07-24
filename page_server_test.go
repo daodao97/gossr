@@ -257,9 +257,15 @@ func TestTypedPageStatusAndRedirectOutcomes(t *testing.T) {
 	}
 
 	rendererRedirect := htmlRequest(router, http.MethodGet, "/render-go", nil)
-	if rendererRedirect.Code != http.StatusTemporaryRedirect ||
-		rendererRedirect.Header().Get("Location") != "/login?from=ssr" {
-		t.Fatalf("renderer redirect status=%d location=%q", rendererRedirect.Code, rendererRedirect.Header().Get("Location"))
+	if rendererRedirect.Code != http.StatusInternalServerError ||
+		rendererRedirect.Header().Get("Location") != "" ||
+		!strings.Contains(rendererRedirect.Body.String(), `name="ssr-error-id"`) {
+		t.Fatalf(
+			"renderer redirect was not rejected: status=%d location=%q body=%s",
+			rendererRedirect.Code,
+			rendererRedirect.Header().Get("Location"),
+			rendererRedirect.Body.String(),
+		)
 	}
 
 	conflict := htmlRequest(router, http.MethodGet, "/conflict", nil)
