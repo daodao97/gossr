@@ -5,10 +5,10 @@
 
 ## 核心能力
 
-- SSR 渲染：执行 `server.js` 中的 `ssrRender(url)`
-- 页面数据：通过宿主创建的 `gossr.NewDataEngine()` + `gossr.WrapSSR` 组织隔离的数据接口
-- 数据通道：自动挂载 `/_ssr/data`，支持前端请求与服务端内部 `Resolve`
-- 注入能力：注入 HTML、`<head>` 内容、`window.__SSR_DATA__`
+- SSR 渲染：执行结构化 `ssrRender({ url, snapshot })`，并兼容旧 `ssrRender(url)`
+- 页面数据：优先使用一个 typed `PageResolver` 同时服务 document 与 navigation
+- 数据通道：自动挂载 `/_ssr/data`，返回 render / redirect / error 判别结果
+- 注入能力：注入 HTML、`<head>` 与 inert JSON boot snapshot
 - 运行保障：渲染超时、并发限制、fallback 页面
 - 模式切换：dev 代理 + 生产静态资源分发
 - 内置引擎：仅保留基于 goja 的 `gojs`
@@ -26,6 +26,7 @@
 gossr/
 ├── server.go                # SSR 主流程、NoRoute、注入、fallback、pprof
 ├── ssr.go                   # Ssr/NewDataEngine/WrapSSR/ResolveWithEngine/SSR fetch 路由保护
+├── page.go                  # PageResolver、typed outcome、document request 筛选
 ├── payload.go               # SSRPayload 接口
 ├── locales/                 # locale 支持（默认 en，支持 en/zh）
 ├── renderer/
@@ -117,15 +118,21 @@ dist/
     └── server.js
 ```
 
-`server.js` 需要暴露全局函数 `ssrRender(url)`，返回 HTML 字符串（也可返回 Promise）：
+推荐的 v2 bundle 显式声明 ABI，并返回结构化结果（也可返回 Promise）：
 
 ```ts
-;(globalThis as any).ssrRender = async (url: string) => {
-  return "<div>hello</div>"
+;(globalThis as any).__GOSSR_RENDER_ABI__ = 2
+;(globalThis as any).ssrRender = async ({ url, snapshot }) => {
+  return {
+    html: `<div>${url}: ${snapshot.message}</div>`,
+    head: "<title>My SSR Page</title>",
+    status: 200,
+  }
 }
-
-;(globalThis as any).__SSR_HEAD__ = "<title>My SSR Page</title>"
 ```
+
+v2 请求数据只通过函数参数传递。旧 bundle 的 `ssrRender(url)`、
+`__SSR_DATA__` 与 `__SSR_HEAD__` 仍由兼容 adapter 支持。
 
 ### 3) 内嵌前端产物
 
@@ -138,7 +145,49 @@ import "embed"
 var Dist embed.FS
 ```
 
-### 4) 注册 SSR 数据接口
+### 4) 注册 typed PageResolver（推荐）
+
+```go
+type snapshot map[string]any
+
+func (s snapshot) AsMap() map[string]any { return s }
+
+func resolvePage(ctx context.Context, request gossr.PageRequest) (gossr.PageResult, error) {
+  // principal 应由真实 Gin middleware 校验后放入 request.Source.Context()。
+  return gossr.PageResult{
+    Payload: snapshot{
+      "schema_version": 1,
+      "url": request.URL.RequestURI(),
+      "context": map[string]any{"site_origin": request.SiteOrigin},
+    },
+  }, nil
+}
+
+if err := gossr.SsrWithOptions(r, web.Dist, gossr.Options{
+  PageResolver: resolvePage,
+  SiteOrigin: "https://www.example.com",
+  ExcludedPathPrefixes: []string{"/api", "/backend", "/admin"},
+}); err != nil {
+  log.Fatal(err)
+}
+```
+
+`PageResolver` 会直接收到真实 transport request 和独立的目标 URL，不会经过内部
+HTTP recorder。签名校验等已知的 Cookie mutation 应优先由注册在 gossr 之前的真实
+Gin middleware 完成；若只有异步页面解析才能确认会话失效，可通过
+`PageResult.Cookies` 返回经过校验的 Cookie。resolver 不拥有任意 response headers。
+
+HTML fallback 只接受 `GET/HEAD` 且 `Accept` 明确包含 HTML 的请求。成功 SSR 会注入
+`<script id="__GOSSR_BOOT__" type="application/json">` 和
+`#app[data-ssr="true"]`。浏览器导航得到以下判别响应：
+
+```text
+{ "kind": "render", "status": 200, "snapshot": { ... } }
+{ "kind": "redirect", "status": 303, "location": "/login" }
+{ "kind": "error", "status": 500, "code": "resolve_failed", "message": "..." }
+```
+
+### 5) 注册 SSR DataEngine（兼容旧项目）
 
 ```go
 package page
@@ -165,7 +214,7 @@ func Home(c *gin.Context) (gossr.SSRPayload, error) {
 }
 ```
 
-### 5) 接入 Gin
+### 6) 旧 DataEngine 接入 Gin
 
 ```go
 package main
@@ -354,6 +403,8 @@ options.SSRFetchAuthorizer = func(req *http.Request) (int, bool) {
 - 默认使用内置 `gojs`；`SSR_ENGINE` 和 `nov8` build tag 已移除
 - V8 等其他引擎通过 `renderer.Factory` 从应用侧显式注入
 - `renderWithTimeout` 默认超时为 `3s`
+- typed `PageResolver` 路径把同一个 `3s` deadline 和 admission slot 覆盖到
+  resolver + renderer 全链路；document 与 navigation 共用，不再额外叠加 render semaphore
 - `SSR_RENDER_LIMIT` 控制并发渲染上限：
   - 不设置：默认 `runtime.GOMAXPROCS(0)`
   - `0`：不限制并发（不启用 semaphore）

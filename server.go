@@ -32,6 +32,13 @@ import (
 type FrontendBuild struct {
 	FrontendDist fs.FS
 	ServerDist   fs.FS
+	// PageResolver is the preferred direct page-data boundary. When set, the
+	// same resolver is used for document and browser navigation requests.
+	PageResolver PageResolver
+	// ExcludedPathPrefixes are host-owned route namespaces that must never be
+	// treated as frontend documents (for example /api and /admin).
+	ExcludedPathPrefixes []string
+	pageAdmission        *pageAdmission
 	// RendererFactory 可注入外部 SSR 引擎；为空时使用内置 gojs。
 	RendererFactory renderer.Factory
 	// SessionResolver 由宿主应用负责认证并返回可安全注入前端的 session 数据。
@@ -116,7 +123,14 @@ func runBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher Backen
 		ssr       renderer.Renderer
 		proxy     *httputil.ReverseProxy
 		renderSem chan struct{}
+		admission *pageAdmission
 	)
+	if frontendBuild.PageResolver != nil {
+		admission = frontendBuild.pageAdmission
+		if admission == nil {
+			admission = newPageAdmission(renderConcurrencyLimit(), defaultPageRequestTimeout)
+		}
+	}
 
 	if devMode {
 		var err error
@@ -127,6 +141,12 @@ func runBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher Backen
 		registerPprof(router)
 		log.Printf("Development mode enabled. Proxying to %s", devServerURL())
 		router.NoRoute(func(c *gin.Context) {
+			if frontendBuild.PageResolver != nil &&
+				!shouldHandleDocument(c.Request, frontendBuild.ExcludedPathPrefixes) {
+				c.Status(http.StatusNotFound)
+				return
+			}
+
 			if isSSRDataPath(c.Request.URL.Path) {
 				c.Status(http.StatusNotFound)
 				return
@@ -163,9 +183,11 @@ func runBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher Backen
 			})
 		}
 
-		renderLimit := renderConcurrencyLimit()
-		if renderLimit > 0 {
-			renderSem = make(chan struct{}, renderLimit)
+		if frontendBuild.PageResolver == nil {
+			renderLimit := renderConcurrencyLimit()
+			if renderLimit > 0 {
+				renderSem = make(chan struct{}, renderLimit)
+			}
 		}
 
 		assetsFS, err := fs.Sub(frontendBuild.FrontendDist, "assets")
@@ -182,6 +204,19 @@ func runBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher Backen
 		registerRootStaticFiles(router, frontendBuild.FrontendDist)
 
 		router.NoRoute(func(c *gin.Context) {
+			if frontendBuild.PageResolver != nil {
+				handlePageDocument(
+					c,
+					indexHTML,
+					ssr,
+					admission,
+					frontendBuild.PageResolver,
+					frontendBuild.ExcludedPathPrefixes,
+					siteOrigin,
+				)
+				return
+			}
+
 			if isSSRDataPath(c.Request.URL.Path) {
 				c.Status(http.StatusNotFound)
 				return
@@ -245,6 +280,231 @@ func runBlocking(router *gin.Engine, frontendBuild FrontendBuild, fetcher Backen
 		})
 	}
 	return nil
+}
+
+func handlePageDocument(
+	c *gin.Context,
+	indexHTML string,
+	ssr renderer.Renderer,
+	admission *pageAdmission,
+	resolver PageResolver,
+	excludedPrefixes []string,
+	configuredSiteOrigin string,
+) {
+	if !shouldHandleDocument(c.Request, excludedPrefixes) {
+		c.Status(http.StatusNotFound)
+		return
+	}
+
+	requestContext, release, err := admission.enter(c.Request.Context())
+	if err != nil {
+		setHTMLNoCacheHeaders(c)
+		c.Status(pageRequestErrorStatus(err))
+		return
+	}
+	defer release()
+	c.Request = c.Request.WithContext(requestContext)
+
+	pageRequest, err := newDocumentPageRequest(c.Request)
+	if err != nil {
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+	pageRequest.SiteOrigin = configuredSiteOrigin
+	if pageRequest.SiteOrigin == "" {
+		pageRequest.SiteOrigin = requestOrigin(c.Request)
+	}
+
+	resolved, payload, err := resolvePage(c.Request.Context(), resolver, pageRequest)
+	if err != nil {
+		log.Printf("resolve page failed path=%q err=%q", c.Request.URL.Path, err)
+		setHTMLNoCacheHeaders(c)
+		c.Status(pageRequestErrorStatus(err))
+		return
+	}
+	writePageCookies(c, resolved.Cookies)
+	setPageCacheHeaders(c, resolved.Cache)
+
+	if resolved.Redirect != nil {
+		writePageRedirect(c, *resolved.Redirect)
+		return
+	}
+
+	locale := explicitLocaleFromPath(pageRequest.URL.Path)
+	reqID := fmt.Sprintf("%d", time.Now().UnixNano())
+	rendered, renderErr := renderWithTimeout(
+		c.Request.Context(),
+		ssr,
+		targetRequestURI(pageRequest),
+		payload,
+		3*time.Second,
+		nil,
+	)
+	if renderErr != nil {
+		log.Printf("ssr render failed id=%s path=%q err=%q", reqID, c.Request.URL.Path, renderErr)
+		fallback := buildPageFallback(indexHTML, payload, locale, reqID)
+		writeHTMLDocument(c, resolved.Status, fallback)
+		return
+	}
+
+	status, redirect, err := mergeRenderOutcome(resolved, rendered)
+	if err != nil {
+		log.Printf("invalid ssr render outcome id=%s path=%q err=%q", reqID, c.Request.URL.Path, err)
+		fallback := buildPageFallback(indexHTML, payload, locale, reqID)
+		writeHTMLDocument(c, http.StatusInternalServerError, fallback)
+		return
+	}
+	if redirect != nil {
+		writePageRedirect(c, *redirect)
+		return
+	}
+
+	page := strings.Replace(indexHTML, "<!--app-html-->", rendered.HTML, 1)
+	page = markSSRApp(page)
+	if locale != "" {
+		page = applyHTMLLang(page, locale)
+	}
+	page = injectHeadContent(page, rendered.Head)
+	page, err = injectSSRBootData(page, payload)
+	if err != nil {
+		log.Printf("inject SSR boot data failed id=%s path=%q err=%q", reqID, c.Request.URL.Path, err)
+		page = buildPageFallback(indexHTML, nil, locale, reqID)
+		status = http.StatusInternalServerError
+	}
+	writeHTMLDocument(c, status, page)
+}
+
+func resolvePage(ctx context.Context, resolver PageResolver, request PageRequest) (PageResult, map[string]any, error) {
+	if resolver == nil {
+		return PageResult{}, nil, errors.New("page resolver is nil")
+	}
+	result, err := resolver(ctx, request)
+	if err != nil {
+		return PageResult{}, nil, err
+	}
+	result, err = normalizePageResult(result)
+	if err != nil {
+		return PageResult{}, nil, err
+	}
+	return result, payloadToMap(result.Payload), nil
+}
+
+func mergeRenderOutcome(page PageResult, rendered renderer.Result) (int, *Redirect, error) {
+	status := page.Status
+	if rendered.Redirect != nil {
+		redirect, err := normalizeRedirect(*rendered.Redirect)
+		if err != nil {
+			return 0, nil, err
+		}
+		if page.Status != http.StatusOK {
+			return 0, nil, fmt.Errorf("renderer redirect conflicts with resolver status %d", page.Status)
+		}
+		if rendered.Status != 0 && rendered.Status != redirect.Status {
+			return 0, nil, fmt.Errorf(
+				"renderer status %d conflicts with redirect status %d",
+				rendered.Status,
+				redirect.Status,
+			)
+		}
+		return redirect.Status, &redirect, nil
+	}
+
+	if rendered.Status == 0 {
+		return status, nil, nil
+	}
+	renderStatus, err := normalizePageResult(PageResult{Status: rendered.Status})
+	if err != nil {
+		return 0, nil, fmt.Errorf("invalid renderer status: %w", err)
+	}
+	if page.Status != http.StatusOK && page.Status != renderStatus.Status {
+		return 0, nil, fmt.Errorf(
+			"renderer status %d conflicts with resolver status %d",
+			renderStatus.Status,
+			page.Status,
+		)
+	}
+	return renderStatus.Status, nil, nil
+}
+
+func setPageCacheHeaders(c *gin.Context, policy CachePolicy) {
+	switch policy {
+	case CachePrivateRevalidate:
+		c.Header("Cache-Control", "private, no-cache, must-revalidate")
+		c.Header("Pragma", "no-cache")
+		c.Header("Expires", "0")
+	default:
+		setHTMLNoCacheHeaders(c)
+	}
+}
+
+func writePageCookies(c *gin.Context, cookies []*http.Cookie) {
+	for _, cookie := range cookies {
+		http.SetCookie(c.Writer, cookie)
+	}
+}
+
+func writePageRedirect(c *gin.Context, redirect Redirect) {
+	c.Header("Location", redirect.Location)
+	c.Status(redirect.Status)
+}
+
+func writeHTMLDocument(c *gin.Context, status int, page string) {
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	if c.Request.Method == http.MethodHead {
+		c.Data(status, "text/html; charset=utf-8", nil)
+		return
+	}
+	c.Data(status, "text/html; charset=utf-8", []byte(page))
+}
+
+func markSSRApp(page string) string {
+	for _, id := range []string{`id="app"`, `id='app'`} {
+		if !strings.Contains(page, id) {
+			continue
+		}
+		return strings.Replace(page, id, id+` data-ssr="true"`, 1)
+	}
+	return page
+}
+
+func injectSSRBootData(page string, payload map[string]any) (string, error) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return page, err
+	}
+
+	const bootID = "__GOSSR_BOOT__"
+	if strings.Contains(page, `id="`+bootID+`"`) {
+		return page, fmt.Errorf("document already contains %s", bootID)
+	}
+	script := `<script id="` + bootID + `" type="application/json">` + string(jsonData) + `</script>`
+	if strings.Contains(page, "</head>") {
+		return strings.Replace(page, "</head>", script+"</head>", 1), nil
+	}
+	if strings.Contains(page, "</body>") {
+		return strings.Replace(page, "</body>", script+"</body>", 1), nil
+	}
+	return page + script, nil
+}
+
+func buildPageFallback(indexHTML string, payload map[string]any, locale string, reqID string) string {
+	page := strings.Replace(indexHTML, "<!--app-html-->", "", 1)
+	if locale != "" {
+		page = applyHTMLLang(page, locale)
+	}
+	if strings.TrimSpace(reqID) != "" {
+		page = injectHeadContent(
+			page,
+			fmt.Sprintf(`<meta name="ssr-error-id" content="%s">`, template.HTMLEscapeString(reqID)),
+		)
+	}
+	if injected, err := injectSSRBootData(page, payload); err == nil {
+		return injected
+	}
+	return page
 }
 
 func isSSRDataPath(rawPath string) bool {
@@ -457,6 +717,18 @@ func localeFromPath(p string) string {
 	return locales.Default
 }
 
+func explicitLocaleFromPath(p string) string {
+	trimmed := strings.Trim(p, "/")
+	if trimmed == "" {
+		return ""
+	}
+	candidate := strings.Split(trimmed, "/")[0]
+	if !locales.IsSupported(candidate) {
+		return ""
+	}
+	return locales.Normalize(candidate)
+}
+
 func requestOrigin(r *http.Request) string {
 	host := primaryHost(r)
 	if host == "" {
@@ -633,6 +905,15 @@ func renderWithTimeout(parentCtx context.Context, ssr renderer.Renderer, urlPath
 
 	if timeout <= 0 {
 		timeout = 3 * time.Second
+	}
+	if deadline, ok := parentCtx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return renderer.Result{}, context.DeadlineExceeded
+		}
+		if remaining < timeout {
+			timeout = remaining
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(parentCtx, timeout)

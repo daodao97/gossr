@@ -220,6 +220,12 @@ func Ssr(r *gin.Engine, dist fs.FS) error {
 type Options struct {
 	RendererFactory renderer.Factory
 	SessionResolver SessionResolver
+	// PageResolver is the preferred typed boundary for both initial documents
+	// and browser navigation snapshots.
+	PageResolver PageResolver
+	// ExcludedPathPrefixes reserves host namespaces such as /api and /admin
+	// from the frontend document fallback.
+	ExcludedPathPrefixes []string
 	// SSRFetchAuthorizer 由宿主应用负责 /_ssr/data 的额外授权。
 	// 为空时使用浏览器同源校验；设置后由授权器完整决定是否放行。
 	SSRFetchAuthorizer SSRFetchAuthorizer
@@ -254,6 +260,38 @@ func SsrWithOptions(r *gin.Engine, dist fs.FS, options Options) error {
 		return err
 	}
 
+	if options.PageResolver != nil {
+		if options.DataEngine != nil {
+			return errors.New("PageResolver and DataEngine cannot be used together")
+		}
+		if options.SessionResolver != nil {
+			return errors.New("PageResolver and SessionResolver cannot be used together; resolve authentication in host middleware")
+		}
+		admission := newPageAdmission(renderConcurrencyLimit(), defaultPageRequestTimeout)
+		if err := runBlocking(
+			r,
+			FrontendBuild{
+				FrontendDist:         frontendFs,
+				ServerDist:           serverFs,
+				PageResolver:         options.PageResolver,
+				ExcludedPathPrefixes: append([]string(nil), options.ExcludedPathPrefixes...),
+				pageAdmission:        admission,
+				RendererFactory:      options.RendererFactory,
+				SiteOrigin:           options.SiteOrigin,
+				ShutdownContext:      options.ShutdownContext,
+			},
+			nil,
+		); err != nil {
+			return err
+		}
+		siteOrigin, err := normalizeSiteOrigin(options.SiteOrigin)
+		if err != nil {
+			return err
+		}
+		mountPageResolverRoutes(r, options.PageResolver, options.SSRFetchAuthorizer, siteOrigin, admission)
+		return nil
+	}
+
 	engine := options.DataEngine
 	if engine == nil {
 		engine = SsrEngine
@@ -274,6 +312,86 @@ func SsrWithOptions(r *gin.Engine, dist fs.FS, options Options) error {
 	}
 	mountSSRFetchRoutes(r, engine, options.SSRFetchAuthorizer)
 	return nil
+}
+
+func mountPageResolverRoutes(
+	r *gin.Engine,
+	resolver PageResolver,
+	authorizer SSRFetchAuthorizer,
+	configuredSiteOrigin string,
+	admission *pageAdmission,
+) {
+	handler := pageResolverNavigationHandler(resolver, configuredSiteOrigin, admission)
+	group := r.Group(DefaultSSRDataRoute)
+	group.GET("", ssrDataNoStoreMiddleware(), ssrGuardMiddleware(authorizer), handler)
+	group.GET("/*path", ssrDataNoStoreMiddleware(), ssrGuardMiddleware(authorizer), handler)
+}
+
+func pageResolverNavigationHandler(
+	resolver PageResolver,
+	configuredSiteOrigin string,
+	admission *pageAdmission,
+) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		requestContext, release, err := admission.enter(c.Request.Context())
+		if err != nil {
+			status := pageRequestErrorStatus(err)
+			writeNavigationError(c, status, "request_timeout", "page request timed out")
+			return
+		}
+		defer release()
+		c.Request = c.Request.WithContext(requestContext)
+
+		request, err := newNavigationPageRequest(c.Request, c.Param("path"))
+		if err != nil {
+			writeNavigationError(c, http.StatusBadRequest, "invalid_target", "invalid navigation target")
+			return
+		}
+		request.SiteOrigin = configuredSiteOrigin
+		if request.SiteOrigin == "" {
+			request.SiteOrigin = requestOrigin(c.Request)
+		}
+
+		resolved, payload, err := resolvePage(c.Request.Context(), resolver, request)
+		if err != nil {
+			log.Printf("resolve navigation failed target=%q err=%q", targetRequestURI(request), err)
+			status := pageRequestErrorStatus(err)
+			code := "resolve_failed"
+			message := "page resolution failed"
+			if status == http.StatusGatewayTimeout || status == http.StatusRequestTimeout {
+				code = "request_timeout"
+				message = "page request timed out"
+			}
+			writeNavigationError(c, status, code, message)
+			return
+		}
+		writePageCookies(c, resolved.Cookies)
+		setPageCacheHeaders(c, resolved.Cache)
+
+		if resolved.Redirect != nil {
+			c.JSON(http.StatusOK, navigationRedirectOutcome{
+				Kind:     "redirect",
+				Status:   resolved.Redirect.Status,
+				Location: resolved.Redirect.Location,
+			})
+			return
+		}
+		c.JSON(resolved.Status, navigationRenderOutcome{
+			Kind:     "render",
+			Status:   resolved.Status,
+			Snapshot: payload,
+		})
+	}
+}
+
+func writeNavigationError(c *gin.Context, status int, code, message string) {
+	setSSRDataNoStoreHeaders(c)
+	c.JSON(status, navigationErrorOutcome{
+		Kind:    "error",
+		Status:  status,
+		Code:    code,
+		Message: message,
+	})
 }
 
 func registerSSRFetchRoutes(r *gin.Engine) BackendDataFetcher {

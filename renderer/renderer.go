@@ -26,9 +26,22 @@ func Close(instance Renderer) error {
 // 外部引擎可通过实现 Renderer 并提供 Factory 注入。
 type Factory func(scriptContents string) Renderer
 
+// Redirect is the only renderer-controlled HTTP mutation. Header ownership
+// remains with the Go orchestrator.
+type Redirect struct {
+	Status   int    `json:"status"`
+	Location string `json:"location"`
+}
+
+// Result is the structured output of one SSR render.
+//
+// Status is optional; zero leaves the resolver status unchanged. Redirect is
+// also optional and is validated by the orchestrator before it is written.
 type Result struct {
-	HTML string
-	Head string
+	HTML     string
+	Head     string
+	Status   int
+	Redirect *Redirect
 }
 
 const DefaultSSRScriptName = "server.js"

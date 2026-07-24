@@ -32,10 +32,11 @@ type runtimePool struct {
 }
 
 type runtimeContainer struct {
-	runtime    *goja.Runtime
-	renderFunc goja.Callable
-	parseJSON  goja.Callable
-	uses       int
+	runtime       *goja.Runtime
+	renderFunc    goja.Callable
+	parseJSON     goja.Callable
+	structuredABI bool
+	uses          int
 }
 
 // newRuntimePool 创建预热的 Goja runtime 池。
@@ -171,11 +172,21 @@ func (p *runtimePool) createRuntime() *runtimeContainer {
 	if !ok {
 		panic("ssrRender is not a function")
 	}
+	abiValue := rt.Get("__GOSSR_RENDER_ABI__")
+	structuredABI := abiValue != nil &&
+		!goja.IsNull(abiValue) &&
+		!goja.IsUndefined(abiValue) &&
+		abiValue.ToInteger() == 2
 	parseJSON, ok := goja.AssertFunction(rt.Get("JSON").ToObject(rt).Get("parse"))
 	if !ok {
 		panic("JSON.parse is not a function")
 	}
-	return &runtimeContainer{runtime: rt, renderFunc: renderFunc, parseJSON: parseJSON}
+	return &runtimeContainer{
+		runtime:       rt,
+		renderFunc:    renderFunc,
+		parseJSON:     parseJSON,
+		structuredABI: structuredABI,
+	}
 }
 
 func installBase64Polyfills(rt *goja.Runtime, global *goja.Object) {

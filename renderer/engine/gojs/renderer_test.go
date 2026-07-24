@@ -159,3 +159,116 @@ func TestRendererCloseStopsNewRenders(t *testing.T) {
 		t.Fatal("render unexpectedly succeeded after Close")
 	}
 }
+
+func TestRendererStructuredABIPassesExplicitSnapshotAndDecodesOutcome(t *testing.T) {
+	t.Setenv("GOJA_POOL_SIZE", "1")
+	r := NewRenderer(`
+globalThis.__GOSSR_RENDER_ABI__ = 2;
+globalThis.ssrRender = async function(input) {
+  if (typeof globalThis.__SSR_DATA__ !== "undefined")
+    throw new Error("structured ABI received ambient request state");
+  return {
+    html: "<main>" + input.url + ":" + input.snapshot.viewer.email + "</main>",
+    head: "<title>Account</title>",
+    status: 404
+  };
+};
+`)
+	t.Cleanup(r.pool.Close)
+
+	result, err := r.Render(context.Background(), "/account?tab=keys", map[string]any{
+		"viewer": map[string]any{"email": "safe@example.com"},
+	})
+	if err != nil {
+		t.Fatalf("structured render failed: %v", err)
+	}
+	if result.HTML != "<main>/account?tab=keys:safe@example.com</main>" ||
+		result.Head != "<title>Account</title>" ||
+		result.Status != 404 ||
+		result.Redirect != nil {
+		t.Fatalf("unexpected structured result: %#v", result)
+	}
+}
+
+func TestRendererStructuredABIDecodesRedirect(t *testing.T) {
+	t.Setenv("GOJA_POOL_SIZE", "1")
+	r := NewRenderer(`
+globalThis.__GOSSR_RENDER_ABI__ = 2;
+globalThis.ssrRender = function(input) {
+  return Promise.resolve({
+    html: "",
+    redirect: { status: 307, location: "/login?from=" + encodeURIComponent(input.url) }
+  });
+};
+`)
+	t.Cleanup(r.pool.Close)
+
+	result, err := r.Render(context.Background(), "/private", nil)
+	if err != nil {
+		t.Fatalf("structured redirect failed: %v", err)
+	}
+	if result.Redirect == nil ||
+		result.Redirect.Status != 307 ||
+		result.Redirect.Location != "/login?from=%2Fprivate" {
+		t.Fatalf("unexpected redirect result: %#v", result)
+	}
+}
+
+func TestRendererStructuredABIRejectsInvalidResult(t *testing.T) {
+	tests := []struct {
+		name   string
+		script string
+	}{
+		{
+			name: "string",
+			script: `
+globalThis.__GOSSR_RENDER_ABI__ = 2;
+globalThis.ssrRender = function() { return "legacy"; };
+`,
+		},
+		{
+			name: "missing html",
+			script: `
+globalThis.__GOSSR_RENDER_ABI__ = 2;
+globalThis.ssrRender = function() { return { head: "<title>missing</title>" }; };
+`,
+		},
+		{
+			name: "fractional status",
+			script: `
+globalThis.__GOSSR_RENDER_ABI__ = 2;
+globalThis.ssrRender = function() { return { html: "bad", status: 200.5 }; };
+`,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Setenv("GOJA_POOL_SIZE", "1")
+			r := NewRenderer(testCase.script)
+			t.Cleanup(r.pool.Close)
+			if _, err := r.Render(context.Background(), "/", nil); err == nil {
+				t.Fatal("invalid structured result was accepted")
+			}
+		})
+	}
+}
+
+func TestRendererLegacyABIStillUsesAmbientAdapter(t *testing.T) {
+	t.Setenv("GOJA_POOL_SIZE", "1")
+	r := NewRenderer(`
+globalThis.ssrRender = function(url) {
+  globalThis.__SSR_HEAD__ = "<title>Legacy</title>";
+  return url + ":" + globalThis.__SSR_DATA__.value;
+};
+`)
+	t.Cleanup(r.pool.Close)
+
+	result, err := r.Render(context.Background(), "/legacy", map[string]any{"value": "ok"})
+	if err != nil {
+		t.Fatalf("legacy render failed: %v", err)
+	}
+	if result.HTML != "/legacy:ok" || result.Head != "<title>Legacy</title>" {
+		t.Fatalf("legacy adapter changed: %#v", result)
+	}
+}

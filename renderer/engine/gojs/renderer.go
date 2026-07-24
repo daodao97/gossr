@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sync/atomic"
 
 	"github.com/daodao97/gossr/renderer"
@@ -77,34 +78,35 @@ func (r *Renderer) Render(ctx context.Context, urlPath string, payload map[strin
 		r.pool.Put(container)
 	}()
 
-	// 注入 SSR 数据
-	if len(payload) > 0 {
-		payloadValue, native, err := nativePayloadValue(rt, payload)
-		if err != nil {
-			return renderer.Result{}, fmt.Errorf("encode SSR payload: %w", err)
-		}
-		if !native {
-			payloadJSON, err := json.Marshal(payload)
-			if err != nil {
-				return renderer.Result{}, fmt.Errorf("encode SSR payload: %w", err)
-			}
-			payloadValue, err = container.parseJSON(goja.Undefined(), rt.ToValue(string(payloadJSON)))
-			if err != nil {
-				return renderer.Result{}, fmt.Errorf("parse SSR payload: %w", formatGojaError(err))
-			}
-		}
-		if err := rt.Set("__SSR_DATA__", payloadValue); err != nil {
-			return renderer.Result{}, err
-		}
-	} else {
-		_ = rt.Set("__SSR_DATA__", goja.Undefined())
-	}
-
 	if container.renderFunc == nil {
 		return renderer.Result{}, errors.New("ssrRender is not a function")
 	}
 
-	val, err := container.renderFunc(goja.Undefined(), rt.ToValue(urlPath))
+	payloadValue, err := renderPayloadValue(container, payload)
+	if err != nil {
+		return renderer.Result{}, err
+	}
+
+	var argument goja.Value
+	if container.structuredABI {
+		input := rt.NewObject()
+		if err := input.Set("url", urlPath); err != nil {
+			return renderer.Result{}, err
+		}
+		if err := input.Set("snapshot", payloadValue); err != nil {
+			return renderer.Result{}, err
+		}
+		argument = input
+	} else {
+		// Compatibility adapter for pre-v2 bundles. New bundles receive the
+		// snapshot only as an explicit function argument.
+		if err := rt.Set("__SSR_DATA__", payloadValue); err != nil {
+			return renderer.Result{}, err
+		}
+		argument = rt.ToValue(urlPath)
+	}
+
+	val, err := container.renderFunc(goja.Undefined(), argument)
 	if err != nil {
 		if interrupted.Load() && ctx.Err() != nil {
 			return renderer.Result{}, ctx.Err()
@@ -120,16 +122,128 @@ func (r *Renderer) Render(ctx context.Context, urlPath string, payload map[strin
 		return renderer.Result{}, formatGojaError(err)
 	}
 
-	headVal := rt.Get("__SSR_HEAD__")
-	head := ""
-	if headVal != nil && !goja.IsNull(headVal) && !goja.IsUndefined(headVal) {
-		head = headVal.String()
+	var result renderer.Result
+	if container.structuredABI {
+		result, err = decodeStructuredResult(rt, resultVal)
+		if err != nil {
+			return renderer.Result{}, err
+		}
+	} else {
+		headVal := rt.Get("__SSR_HEAD__")
+		head := ""
+		if headVal != nil && !goja.IsNull(headVal) && !goja.IsUndefined(headVal) {
+			head = headVal.String()
+		}
+		result = renderer.Result{
+			HTML: resultVal.String(),
+			Head: head,
+		}
 	}
 
-	result := renderer.Result{
-		HTML: resultVal.String(),
-		Head: head,
-	}
 	healthy = true
 	return result, nil
+}
+
+func renderPayloadValue(container *runtimeContainer, payload map[string]any) (goja.Value, error) {
+	rt := container.runtime
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payloadValue, native, err := nativePayloadValue(rt, payload)
+	if err != nil {
+		return nil, fmt.Errorf("encode SSR payload: %w", err)
+	}
+	if native {
+		return payloadValue, nil
+	}
+
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("encode SSR payload: %w", err)
+	}
+	payloadValue, err = container.parseJSON(goja.Undefined(), rt.ToValue(string(payloadJSON)))
+	if err != nil {
+		return nil, fmt.Errorf("parse SSR payload: %w", formatGojaError(err))
+	}
+	return payloadValue, nil
+}
+
+func decodeStructuredResult(rt *goja.Runtime, value goja.Value) (renderer.Result, error) {
+	if value == nil || goja.IsNull(value) || goja.IsUndefined(value) {
+		return renderer.Result{}, errors.New("structured ssrRender returned no result")
+	}
+	object := value.ToObject(rt)
+	if object.ClassName() != "Object" {
+		return renderer.Result{}, fmt.Errorf("structured ssrRender returned %s, want object", object.ClassName())
+	}
+
+	html, err := requiredResultString(object.Get("html"), "html")
+	if err != nil {
+		return renderer.Result{}, err
+	}
+	head, err := optionalResultString(object.Get("head"), "head")
+	if err != nil {
+		return renderer.Result{}, err
+	}
+	status, err := optionalResultInt(object.Get("status"), "status")
+	if err != nil {
+		return renderer.Result{}, err
+	}
+
+	result := renderer.Result{HTML: html, Head: head, Status: status}
+	redirectValue := object.Get("redirect")
+	if redirectValue == nil || goja.IsNull(redirectValue) || goja.IsUndefined(redirectValue) {
+		return result, nil
+	}
+	redirectObject := redirectValue.ToObject(rt)
+	if redirectObject.ClassName() != "Object" {
+		return renderer.Result{}, errors.New("structured ssrRender redirect must be an object")
+	}
+	location, err := requiredResultString(redirectObject.Get("location"), "redirect.location")
+	if err != nil {
+		return renderer.Result{}, err
+	}
+	redirectStatus, err := optionalResultInt(redirectObject.Get("status"), "redirect.status")
+	if err != nil {
+		return renderer.Result{}, err
+	}
+	result.Redirect = &renderer.Redirect{Status: redirectStatus, Location: location}
+	return result, nil
+}
+
+func requiredResultString(value goja.Value, name string) (string, error) {
+	if value == nil || goja.IsNull(value) || goja.IsUndefined(value) {
+		return "", fmt.Errorf("structured ssrRender result.%s is required", name)
+	}
+	exported, ok := value.Export().(string)
+	if !ok {
+		return "", fmt.Errorf("structured ssrRender result.%s must be a string", name)
+	}
+	return exported, nil
+}
+
+func optionalResultString(value goja.Value, name string) (string, error) {
+	if value == nil || goja.IsNull(value) || goja.IsUndefined(value) {
+		return "", nil
+	}
+	exported, ok := value.Export().(string)
+	if !ok {
+		return "", fmt.Errorf("structured ssrRender result.%s must be a string", name)
+	}
+	return exported, nil
+}
+
+func optionalResultInt(value goja.Value, name string) (int, error) {
+	if value == nil || goja.IsNull(value) || goja.IsUndefined(value) {
+		return 0, nil
+	}
+	number, ok := value.Export().(int64)
+	if ok {
+		return int(number), nil
+	}
+	float, ok := value.Export().(float64)
+	if !ok || math.Trunc(float) != float {
+		return 0, fmt.Errorf("structured ssrRender result.%s must be an integer", name)
+	}
+	return int(float), nil
 }
