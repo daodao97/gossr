@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { recoverStaleClientRoute } from './stale-client'
 
@@ -23,7 +23,38 @@ describe('stale client recovery', () => {
       target,
     )
 
-    expect(recovered).toBe(false)
+    expect(recovered).toBe('retry-exhausted')
     expect(window.sessionStorage.length).toBe(0)
+  })
+
+  it('reloads a stale route at most once across consecutive boots', () => {
+    const navigateDocument = vi.fn()
+    const error = new Error('Failed to fetch dynamically imported module')
+
+    expect(recoverStaleClientRoute(
+      'reload-once',
+      error,
+      '/dashboard',
+      navigateDocument,
+    )).toBe('reloaded')
+    expect(navigateDocument).toHaveBeenCalledOnce()
+    expect(navigateDocument).toHaveBeenCalledWith('/dashboard')
+
+    expect(recoverStaleClientRoute(
+      'reload-once',
+      error,
+      '/dashboard',
+      navigateDocument,
+    )).toBe('retry-exhausted')
+    expect(navigateDocument).toHaveBeenCalledOnce()
+  })
+
+  it('leaves non-stale router failures to the generic fallback', () => {
+    expect(recoverStaleClientRoute(
+      'ordinary-error',
+      new Error('guard failed'),
+      '/dashboard',
+      vi.fn(),
+    )).toBe('not-stale')
   })
 })

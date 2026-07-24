@@ -26,20 +26,11 @@ export type NavigationOutcome<Document> =
     message: string
   }
 
-export type NavigationPreparation =
-  | { kind: 'ready' }
-  | { kind: 'redirect', status: number, location: string }
-  | { kind: 'cancelled' }
-  | { kind: 'error', status?: number, code?: string, error: Error }
-
 export interface NavigationCoordinator<Document> {
   current: Readonly<Ref<Document | undefined>>
   loading: Readonly<Ref<boolean>>
   error: Readonly<Ref<Error | null>>
-  stagedURL: Readonly<Ref<string | undefined>>
-  prepare: (url: string, options?: { force?: boolean }) => Promise<NavigationPreparation>
-  commit: (url: string) => boolean
-  refresh: (url: string) => Promise<NavigationPreparation>
+  refresh: () => Promise<boolean>
 }
 
 export interface GossrSetupContext<Document> {

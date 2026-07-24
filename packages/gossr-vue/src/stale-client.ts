@@ -1,35 +1,41 @@
 import { canonicalNavigationURL } from './url.js'
 
+export type StaleClientRecovery =
+  | 'not-stale'
+  | 'reloaded'
+  | 'retry-exhausted'
+
 export function recoverStaleClientRoute(
   appId: string,
   error: unknown,
   targetURL: string,
-) {
+  navigateDocument: (url: string) => void = url => window.location.assign(url),
+): StaleClientRecovery {
   if (typeof window === 'undefined' || !isStaleClientAssetError(error))
-    return false
+    return 'not-stale'
 
   let safeTargetURL: string
   try {
     safeTargetURL = canonicalNavigationURL(targetURL)
   }
   catch {
-    return false
+    return 'retry-exhausted'
   }
 
   const storageKey = staleClientReloadKey(appId)
   try {
     if (window.sessionStorage.getItem(storageKey) === safeTargetURL) {
       window.sessionStorage.removeItem(storageKey)
-      return false
+      return 'retry-exhausted'
     }
     window.sessionStorage.setItem(storageKey, safeTargetURL)
   }
   catch {
-    return false
+    return 'retry-exhausted'
   }
 
-  window.location.assign(safeTargetURL)
-  return true
+  navigateDocument(safeTargetURL)
+  return 'reloaded'
 }
 
 export function clearStaleClientRecovery(appId: string) {

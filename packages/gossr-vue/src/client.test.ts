@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { defineComponent, h } from 'vue'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   bootstrapClient,
@@ -106,6 +106,44 @@ describe('boot document and hydration decision', () => {
     expect(document.querySelector('#app > main')).not.toBe(staleNode)
     expect(document.querySelector('#app')?.textContent).toBe('client')
     runtime.dispose()
+  })
+
+  it('loads a complete document before mounting without boot data', async () => {
+    const definition = domDefinition('client')
+    document.body.innerHTML = '<div id="app"><main>static fallback</main></div>'
+    const staticNode = document.querySelector('#app > main')
+    let resolveResponse!: (response: Response) => void
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () => await new Promise<Response>((resolve) => {
+        resolveResponse = resolve
+      }),
+    )
+
+    const bootstrap = bootstrapClient(definition)
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledOnce()
+    })
+    expect(document.querySelector('#app > main')).toBe(staticNode)
+
+    resolveResponse({
+      status: 200,
+      async json() {
+        return {
+          kind: 'render',
+          status: 200,
+          snapshot: {
+            url: '/current?tab=one',
+            value: 'client',
+          },
+        }
+      },
+    } as Response)
+
+    const runtime = await bootstrap
+    expect(document.querySelector('#app > main')).not.toBe(staticNode)
+    expect(document.querySelector('#app')?.textContent).toBe('client')
+    runtime.dispose()
+    fetchMock.mockRestore()
   })
 
   it('removes the boot element even when bootstrap fails', async () => {

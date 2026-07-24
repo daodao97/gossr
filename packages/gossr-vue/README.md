@@ -14,6 +14,11 @@ pin a full commit and select this package directory:
 Application code does not create routers, histories, navigation fetchers, SSR
 apps, or hydration flows directly.
 
+The navigation object exposed to application code is deliberately small:
+`current`, `loading`, `error`, and a parameterless `refresh()`. Preparing a
+target document, cancelling stale requests, and committing it with the route
+are framework-owned details.
+
 The application surface is one `defineGossrApp()` call:
 
 ```ts
@@ -52,6 +57,15 @@ import { installGojaRenderABI } from '@daodao97/gossr-vue/server'
   asynchronous work.
 - Page documents enter through the application codec exactly once. Their URL
   must match the strict same-origin target used by the router.
+- Client route changes load and validate the complete target document before
+  Vue Router confirms the navigation. The route and document are then
+  published in one update; application pages never render against staged or
+  placeholder data.
+- A failed or unhandled client navigation is left to a full browser request,
+  preserving the server as the final redirect and error authority.
+- External destinations stay ordinary browser links rather than entering the
+  SPA router. The framework never forwards an unsafe router URL to
+  `location.assign()`.
 - Vue Router `fullPath` values cross `documentURLFromRouter()` before they
   reach the document/data boundary. Browser-only fragments remain available to
   the router but never weaken strict wire URL validation.

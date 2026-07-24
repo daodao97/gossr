@@ -1,14 +1,19 @@
-import { computed, shallowRef } from 'vue'
+import { shallowRef } from 'vue'
+import type { Ref } from 'vue'
 
 import { parseDocument } from './document.js'
 import { canonicalNavigationURL, navigationURLsMatch } from './url.js'
 import type {
   DocumentCodec,
-  NavigationCoordinator,
   NavigationOutcome,
-  NavigationPreparation,
 } from './types.js'
 import type { ParsedDocument } from './document.js'
+
+export type NavigationPreparation =
+  | { kind: 'ready' }
+  | { kind: 'redirect', status: number, location: string }
+  | { kind: 'cancelled' }
+  | { kind: 'error', status?: number, code?: string, error: Error }
 
 export type NavigationFetcher = (
   url: string,
@@ -22,7 +27,10 @@ interface StagedDocument<Document> extends ParsedDocument<Document> {
 
 interface ActiveNavigation {
   id: number
+  kind: 'route' | 'refresh'
+  url: string
   controller: AbortController
+  promise: Promise<NavigationPreparation>
 }
 
 interface NavigationOptions<Document> {
@@ -31,8 +39,15 @@ interface NavigationOptions<Document> {
   fetcher?: NavigationFetcher
 }
 
-export interface ManagedNavigationCoordinator<Document>
-  extends NavigationCoordinator<Document> {
+export interface ManagedNavigationCoordinator<Document> {
+  current: Readonly<Ref<Document | undefined>>
+  loading: Readonly<Ref<boolean>>
+  error: Readonly<Ref<Error | null>>
+  prepare: (url: string, options?: { force?: boolean }) => Promise<NavigationPreparation>
+  commit: (url: string) => boolean
+  refresh: (url: string) => Promise<NavigationPreparation>
+  cancelRoute: () => void
+  documentFor: (url: string) => Document | undefined
   dispose: () => void
 }
 
@@ -48,14 +63,35 @@ export function createNavigationCoordinator<Document>(
   let sequence = 0
   let disposed = false
 
-  async function prepare(
+  function prepare(
     rawURL: string,
     prepareOptions: { force?: boolean } = {},
   ): Promise<NavigationPreparation> {
     if (disposed)
-      return { kind: 'cancelled' }
+      return Promise.resolve({ kind: 'cancelled' })
 
     const url = canonicalNavigationURL(rawURL)
+    if (
+      active?.kind === 'route'
+      && navigationURLsMatch(active.url, url)
+    ) {
+      return active.promise
+    }
+    if (
+      staged.value?.id === sequence
+      && navigationURLsMatch(staged.value.targetURL, url)
+    ) {
+      return Promise.resolve({ kind: 'ready' })
+    }
+
+    return startNavigation(url, prepareOptions.force === true, 'route')
+  }
+
+  function startNavigation(
+    url: string,
+    force: boolean,
+    kind: ActiveNavigation['kind'],
+  ): Promise<NavigationPreparation> {
     const id = ++sequence
 
     active?.controller.abort()
@@ -65,7 +101,7 @@ export function createNavigationCoordinator<Document>(
     error.value = null
 
     if (
-      !prepareOptions.force
+      !force
       && current.value !== undefined
       && currentURL.value !== undefined
       && navigationURLsMatch(currentURL.value, url)
@@ -76,88 +112,97 @@ export function createNavigationCoordinator<Document>(
         targetURL: url,
         document: current.value,
       }
-      return { kind: 'ready' }
+      return Promise.resolve({ kind: 'ready' })
     }
 
     if (!options.fetcher) {
       const cause = new Error(`No page document is available for ${url}`)
       error.value = cause
-      return { kind: 'error', error: cause }
+      return Promise.resolve({ kind: 'error', error: cause })
     }
 
     const controller = new AbortController()
-    active = { id, controller }
     loading.value = true
 
-    try {
-      const value = await options.fetcher(url, controller.signal)
-      if (controller.signal.aborted || id !== sequence || disposed)
-        return { kind: 'cancelled' }
-
-      const outcome = decodeNavigationOutcome(value)
-      if (outcome.kind === 'redirect') {
-        return {
-          kind: 'redirect',
-          status: outcome.status,
-          location: canonicalNavigationURL(outcome.location),
-        }
-      }
-      if (outcome.kind === 'error') {
-        const cause = new Error(outcome.message || '页面数据加载失败')
-        error.value = cause
-        return {
-          kind: 'error',
-          status: outcome.status,
-          code: outcome.code,
-          error: cause,
-        }
-      }
-
-      let parsed: ParsedDocument<Document>
+    const promise = (async (): Promise<NavigationPreparation> => {
       try {
-        parsed = parseDocument(options.codec, outcome.snapshot, 'Navigation response')
+        const value = await options.fetcher!(url, controller.signal)
+        if (controller.signal.aborted || id !== sequence || disposed)
+          return { kind: 'cancelled' }
+
+        const outcome = decodeNavigationOutcome(value)
+        if (outcome.kind === 'redirect') {
+          return {
+            kind: 'redirect',
+            status: outcome.status,
+            location: canonicalNavigationURL(outcome.location),
+          }
+        }
+        if (outcome.kind === 'error') {
+          const cause = new Error(outcome.message || '页面数据加载失败')
+          error.value = cause
+          return {
+            kind: 'error',
+            status: outcome.status,
+            code: outcome.code,
+            error: cause,
+          }
+        }
+
+        let parsed: ParsedDocument<Document>
+        try {
+          parsed = parseDocument(options.codec, outcome.snapshot, 'Navigation response')
+        }
+        catch (reason) {
+          const cause = asError(reason, 'Navigation response contains an invalid page document')
+          error.value = cause
+          return { kind: 'error', status: outcome.status, error: cause }
+        }
+
+        if (parsed.url !== url) {
+          const cause = new Error(
+            `Page document URL mismatch: expected ${url}, received ${parsed.url}`,
+          )
+          error.value = cause
+          return { kind: 'error', status: outcome.status, error: cause }
+        }
+
+        staged.value = {
+          id,
+          targetURL: url,
+          ...parsed,
+        }
+        return { kind: 'ready' }
       }
       catch (reason) {
-        const cause = asError(reason, 'Navigation response contains an invalid page document')
+        if (
+          controller.signal.aborted
+          || id !== sequence
+          || disposed
+          || isAbortError(reason)
+        ) {
+          return { kind: 'cancelled' }
+        }
+
+        const cause = asError(reason, '页面数据加载失败')
         error.value = cause
-        return { kind: 'error', status: outcome.status, error: cause }
+        return { kind: 'error', error: cause }
       }
+      finally {
+        finishNavigation(id)
+      }
+    })()
 
-      if (parsed.url !== url) {
-        const cause = new Error(
-          `Page document URL mismatch: expected ${url}, received ${parsed.url}`,
-        )
-        error.value = cause
-        return { kind: 'error', status: outcome.status, error: cause }
-      }
+    active = { id, kind, url, controller, promise }
+    return promise
+  }
 
-      staged.value = {
-        id,
-        targetURL: url,
-        ...parsed,
-      }
-      return { kind: 'ready' }
-    }
-    catch (reason) {
-      if (
-        controller.signal.aborted
-        || id !== sequence
-        || disposed
-        || isAbortError(reason)
-      ) {
-        return { kind: 'cancelled' }
-      }
+  function finishNavigation(id: number) {
+    if (active?.id !== id)
+      return
 
-      const cause = asError(reason, '页面数据加载失败')
-      error.value = cause
-      return { kind: 'error', error: cause }
-    }
-    finally {
-      if (active?.id === id) {
-        active = undefined
-        loading.value = false
-      }
-    }
+    active = undefined
+    loading.value = false
   }
 
   function commit(rawURL: string) {
@@ -177,10 +222,44 @@ export function createNavigationCoordinator<Document>(
   }
 
   async function refresh(rawURL: string) {
-    const result = await prepare(rawURL, { force: true })
+    if (disposed || active?.kind === 'route')
+      return { kind: 'cancelled' } satisfies NavigationPreparation
+
+    const url = canonicalNavigationURL(rawURL)
+    const result = await startNavigation(url, true, 'refresh')
     if (result.kind === 'ready' && !commit(rawURL))
       return { kind: 'cancelled' } satisfies NavigationPreparation
     return result
+  }
+
+  function cancelRoute() {
+    if (active?.kind !== 'route')
+      return
+
+    sequence += 1
+    active.controller.abort()
+    active = undefined
+    staged.value = undefined
+    loading.value = false
+  }
+
+  function documentFor(rawURL: string) {
+    const url = canonicalNavigationURL(rawURL)
+    const candidate = staged.value
+    if (
+      candidate?.id === sequence
+      && navigationURLsMatch(candidate.targetURL, url)
+    ) {
+      return candidate.document
+    }
+    if (
+      current.value !== undefined
+      && currentURL.value !== undefined
+      && navigationURLsMatch(currentURL.value, url)
+    ) {
+      return current.value
+    }
+    return undefined
   }
 
   function dispose() {
@@ -199,10 +278,11 @@ export function createNavigationCoordinator<Document>(
     current,
     loading,
     error,
-    stagedURL: computed(() => staged.value?.url),
     prepare,
     commit,
     refresh,
+    cancelRoute,
+    documentFor,
     dispose,
   }
 }

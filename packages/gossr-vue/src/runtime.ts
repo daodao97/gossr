@@ -1,4 +1,4 @@
-import { createApp as createClientApp, createSSRApp } from 'vue'
+import { computed, createApp as createClientApp, createSSRApp } from 'vue'
 import {
   NavigationFailureType,
   START_LOCATION,
@@ -43,6 +43,7 @@ interface RuntimeOptions<Document> {
   platform: GossrPlatform
   initial?: ParsedDocument<Document>
   hydrate?: boolean
+  navigateDocument?: (url: string) => void
 }
 
 export interface GossrApplicationRuntime<Document> {
@@ -76,9 +77,9 @@ export function createApplicationRuntime<Document>(
     throwAfterHistoryCleanup(error, history)
   }
 
-  let navigation: ManagedNavigationCoordinator<Document>
+  let managedNavigation: ManagedNavigationCoordinator<Document>
   try {
-    navigation = createNavigationCoordinator({
+    managedNavigation = createNavigationCoordinator({
       codec: definition.document,
       initial: options.initial,
       fetcher: options.platform === 'client' ? fetchNavigationOutcome : undefined,
@@ -90,6 +91,15 @@ export function createApplicationRuntime<Document>(
 
   const businessScope = new SynchronousDisposableScope()
   const frameworkDisposers: Array<() => void> = []
+  const clientNavigation = options.platform === 'client'
+    ? createClientNavigationState(options.navigateDocument)
+    : undefined
+  const navigation = createPublicNavigation(
+    options.platform,
+    router,
+    managedNavigation,
+    clientNavigation,
+  )
   let mounted = false
   let disposing = false
   let disposed = false
@@ -102,13 +112,15 @@ export function createApplicationRuntime<Document>(
       ? createInitialNavigationTracker(router, frameworkDisposers)
       : undefined
 
-    installFrameworkHooks({
-      appId: definition.appId,
-      platform: options.platform,
-      router,
-      navigation,
-      frameworkDisposers,
-    })
+    if (clientNavigation) {
+      installClientNavigationObservers({
+        appId: definition.appId,
+        router,
+        navigation: managedNavigation,
+        state: clientNavigation,
+        frameworkDisposers,
+      })
+    }
 
     let setupResult: unknown
     try {
@@ -130,6 +142,15 @@ export function createApplicationRuntime<Document>(
     }
     if (setupResult !== undefined)
       throw new Error('setup() must not return a value; register cleanup with onDispose()')
+
+    if (clientNavigation) {
+      installClientNavigationLoader({
+        router,
+        navigation: managedNavigation,
+        state: clientNavigation,
+        frameworkDisposers,
+      })
+    }
 
     initialTracker?.arm()
     app.use(router)
@@ -194,7 +215,7 @@ export function createApplicationRuntime<Document>(
       runCleanup(errors, frameworkDisposers[index])
     frameworkDisposers.length = 0
 
-    runCleanup(errors, navigation.dispose)
+    runCleanup(errors, managedNavigation.dispose)
     runCleanup(errors, history.destroy)
 
     storedDisposeError = cleanupError(errors)
@@ -234,99 +255,237 @@ function caseSensitiveRouteRecords(
   })
 }
 
-function installFrameworkHooks<Document>(options: {
+interface PreparedClientRoute {
+  documentURL: string
+}
+
+interface ClientNavigationState {
+  pendingRoutes: number
+  preparedRoutes: WeakMap<RouteLocationNormalized, PreparedClientRoute>
+  handledRoutes: WeakSet<RouteLocationNormalized>
+  fallback: (url: string) => void
+}
+
+function createClientNavigationState(
+  navigateDocument: (url: string) => void = url => window.location.assign(url),
+): ClientNavigationState {
+  let fallbackTarget: string | undefined
+
+  return {
+    pendingRoutes: 0,
+    preparedRoutes: new WeakMap(),
+    handledRoutes: new WeakSet(),
+    fallback(url) {
+      const safeURL = safeDocumentURL(url)
+      if (!safeURL)
+        return
+      if (fallbackTarget !== undefined)
+        return
+
+      fallbackTarget = safeURL
+      try {
+        navigateDocument(safeURL)
+      }
+      catch (error) {
+        fallbackTarget = undefined
+        console.error('[navigation] browser fallback failed', error)
+      }
+    },
+  }
+}
+
+function createPublicNavigation<Document>(
+  platform: GossrPlatform,
+  router: Router,
+  navigation: ManagedNavigationCoordinator<Document>,
+  clientState: ClientNavigationState | undefined,
+): NavigationCoordinator<Document> {
+  const current = platform === 'client'
+    ? computed(() => {
+        const route = router.currentRoute.value
+        if (route === START_LOCATION)
+          return navigation.current.value
+        const documentURL = safeDocumentURL(route.fullPath)
+        return documentURL === undefined
+          ? undefined
+          : navigation.documentFor(documentURL)
+      })
+    : navigation.current
+
+  return {
+    current,
+    loading: navigation.loading,
+    error: navigation.error,
+    async refresh() {
+      if (platform !== 'client' || !clientState || clientState.pendingRoutes > 0)
+        return false
+
+      const documentURL = documentURLFromRouter(
+        router.currentRoute.value.fullPath,
+      )
+      const result = await navigation.refresh(documentURL)
+      if (result.kind === 'ready') {
+        return navigationURLsMatch(
+          documentURLFromRouter(router.currentRoute.value.fullPath),
+          documentURL,
+        )
+      }
+      if (result.kind === 'redirect') {
+        try {
+          return !(await router.replace(result.location))
+        }
+        catch {
+          clientState.fallback(documentURL)
+          return false
+        }
+      }
+      if (result.kind === 'error')
+        clientState.fallback(documentURL)
+      return false
+    },
+  }
+}
+
+function installClientNavigationObservers<Document>(options: {
   appId: string
-  platform: GossrPlatform
   router: Router
   navigation: ManagedNavigationCoordinator<Document>
+  state: ClientNavigationState
   frameworkDisposers: Array<() => void>
 }) {
   const {
     appId,
-    platform,
     router,
     navigation,
+    state,
     frameworkDisposers,
   } = options
 
-  if (platform === 'server') {
-    frameworkDisposers.push(router.beforeResolve(async (to) => {
-      const preparation = await navigation.prepare(
-        documentURLFromRouter(to.fullPath),
-      )
-      if (preparation.kind === 'ready')
-        return true
-      if (preparation.kind === 'redirect')
-        return preparation.location
-      if (preparation.kind === 'error')
-        throw preparation.error
-      return false
-    }))
-  }
-  else {
-    frameworkDisposers.push(router.onError((error, to) => {
-      if (!recoverStaleClientRoute(
-        appId,
-        error,
-        documentURLFromRouter(to.fullPath),
-      )) {
-        console.error('[router] navigation failed', error)
-      }
-    }))
-  }
-
-  frameworkDisposers.push(router.afterEach((to, from, failure) => {
-    if (failure)
+  frameworkDisposers.push(router.onError((error, to) => {
+    const documentURL = safeDocumentURL(to.fullPath)
+    if (!documentURL) {
+      state.fallback(to.fullPath)
+      return
+    }
+    const recovery = recoverStaleClientRoute(
+      appId,
+      error,
+      documentURL,
+    )
+    if (recovery !== 'not-stale')
       return
 
-    if (platform === 'server') {
-      navigation.commit(documentURLFromRouter(to.fullPath))
+    console.error('[router] navigation failed', error)
+    state.fallback(documentURL)
+  }))
+
+  frameworkDisposers.push(router.afterEach((to, _from, failure) => {
+    const prepared = state.preparedRoutes.get(to)
+    const handled = state.handledRoutes.has(to)
+    state.handledRoutes.delete(to)
+    if (prepared) {
+      state.preparedRoutes.delete(to)
+      releasePendingRoute(state)
+      if (!failure && !navigation.commit(prepared.documentURL))
+        state.fallback(to.fullPath)
+    }
+
+    if (failure) {
+      if (
+        !prepared
+        && !handled
+        && !isNavigationFailure(failure, NavigationFailureType.cancelled)
+      ) {
+        navigation.cancelRoute()
+      }
       return
     }
 
     clearStaleClientRecovery(appId)
-    const targetDocumentURL = documentURLFromRouter(to.fullPath)
+  }))
+}
+
+function installClientNavigationLoader<Document>(options: {
+  router: Router
+  navigation: ManagedNavigationCoordinator<Document>
+  state: ClientNavigationState
+  frameworkDisposers: Array<() => void>
+}) {
+  const {
+    router,
+    navigation,
+    state,
+    frameworkDisposers,
+  } = options
+
+  frameworkDisposers.push(router.beforeResolve(async (to, from) => {
+    if (to.matched.length === 0) {
+      state.handledRoutes.add(to)
+      state.fallback(to.fullPath)
+      return false
+    }
+
+    let documentURL: string
+    try {
+      documentURL = documentURLFromRouter(to.fullPath)
+    }
+    catch {
+      state.handledRoutes.add(to)
+      state.fallback(to.fullPath)
+      return false
+    }
+
     if (
       from !== START_LOCATION
       && navigationURLsMatch(
         documentURLFromRouter(from.fullPath),
-        targetDocumentURL,
+        documentURL,
       )
     ) {
-      return
+      return true
     }
-    void settleClientNavigation(
-      router,
-      navigation,
-      targetDocumentURL,
-      from !== START_LOCATION,
-    ).catch((error) => {
-      console.error('[navigation] page data update failed', error)
-    })
+
+    state.pendingRoutes += 1
+    let releasePending = true
+    try {
+      const preparation = await navigation.prepare(documentURL, {
+        force: from !== START_LOCATION,
+      })
+      if (preparation.kind === 'ready') {
+        state.preparedRoutes.set(to, { documentURL })
+        releasePending = false
+        return true
+      }
+      state.handledRoutes.add(to)
+      if (preparation.kind === 'redirect')
+        return preparation.location
+      if (preparation.kind === 'error')
+        state.fallback(documentURL)
+      return false
+    }
+    catch {
+      state.handledRoutes.add(to)
+      state.fallback(to.fullPath)
+      return false
+    }
+    finally {
+      if (releasePending)
+        releasePendingRoute(state)
+    }
   }))
 }
 
-async function settleClientNavigation<Document>(
-  router: Router,
-  navigation: ManagedNavigationCoordinator<Document>,
-  documentURL: string,
-  refresh: boolean,
-) {
-  const preparation = await navigation.prepare(documentURL, {
-    force: refresh,
-  })
-  if (
-    documentURLFromRouter(router.currentRoute.value.fullPath) !== documentURL
-  ) {
-    return
-  }
+function releasePendingRoute(state: ClientNavigationState) {
+  state.pendingRoutes = Math.max(0, state.pendingRoutes - 1)
+}
 
-  if (preparation.kind === 'ready') {
-    navigation.commit(documentURL)
-    return
+function safeDocumentURL(fullPath: string) {
+  try {
+    return documentURLFromRouter(fullPath)
   }
-  if (preparation.kind === 'redirect')
-    await router.replace(preparation.location)
+  catch {
+    return undefined
+  }
 }
 
 function createInitialNavigationTracker(

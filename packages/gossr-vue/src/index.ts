@@ -13,8 +13,6 @@ export type {
   GossrPlatform,
   GossrSetupContext,
   NavigationCoordinator,
-  NavigationOutcome,
-  NavigationPreparation,
   SSRRenderInput,
   SSRRenderResult,
 } from './types.js'
