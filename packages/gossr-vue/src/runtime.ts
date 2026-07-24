@@ -275,7 +275,7 @@ function installFrameworkHooks<Document>(options: {
     }))
   }
 
-  frameworkDisposers.push(router.afterEach((to, _from, failure) => {
+  frameworkDisposers.push(router.afterEach((to, from, failure) => {
     if (failure)
       return
 
@@ -285,7 +285,22 @@ function installFrameworkHooks<Document>(options: {
     }
 
     clearStaleClientRecovery(appId)
-    void settleClientNavigation(router, navigation, to.fullPath).catch((error) => {
+    const targetDocumentURL = documentURLFromRouter(to.fullPath)
+    if (
+      from !== START_LOCATION
+      && navigationURLsMatch(
+        documentURLFromRouter(from.fullPath),
+        targetDocumentURL,
+      )
+    ) {
+      return
+    }
+    void settleClientNavigation(
+      router,
+      navigation,
+      targetDocumentURL,
+      from !== START_LOCATION,
+    ).catch((error) => {
       console.error('[navigation] page data update failed', error)
     })
   }))
@@ -294,10 +309,12 @@ function installFrameworkHooks<Document>(options: {
 async function settleClientNavigation<Document>(
   router: Router,
   navigation: ManagedNavigationCoordinator<Document>,
-  routerFullPath: string,
+  documentURL: string,
+  refresh: boolean,
 ) {
-  const documentURL = documentURLFromRouter(routerFullPath)
-  const preparation = await navigation.prepare(documentURL)
+  const preparation = await navigation.prepare(documentURL, {
+    force: refresh,
+  })
   if (
     documentURLFromRouter(router.currentRoute.value.fullPath) !== documentURL
   ) {
