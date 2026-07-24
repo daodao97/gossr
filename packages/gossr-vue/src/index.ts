@@ -1,10 +1,10 @@
-export { defineGossrApp } from './definition'
+export { defineGossrApp } from './definition.js'
 export {
   canonicalNavigationURL,
   documentURLFromRouter,
   navigationURLsMatch,
   safeNavigationURL,
-} from './url'
+} from './url.js'
 
 export type {
   DocumentCodec,
@@ -17,4 +17,4 @@ export type {
   NavigationPreparation,
   SSRRenderInput,
   SSRRenderResult,
-} from './types'
+} from './types.js'

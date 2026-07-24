@@ -1,14 +1,14 @@
 import { computed, shallowRef } from 'vue'
 
-import { parseDocument } from './document'
-import { canonicalNavigationURL, navigationURLsMatch } from './url'
+import { parseDocument } from './document.js'
+import { canonicalNavigationURL, navigationURLsMatch } from './url.js'
 import type {
   DocumentCodec,
   NavigationCoordinator,
   NavigationOutcome,
   NavigationPreparation,
-} from './types'
-import type { ParsedDocument } from './document'
+} from './types.js'
+import type { ParsedDocument } from './document.js'
 
 export type NavigationFetcher = (
   url: string,

@@ -1,19 +1,19 @@
 import { renderToString } from '@vue/server-renderer'
 
-import { parseDocument } from './document'
-import { attachCleanupError } from './lifecycle'
+import { parseDocument } from './document.js'
+import { attachCleanupError } from './lifecycle.js'
 import {
   createApplicationRuntime,
   navigateServerRuntime,
-} from './runtime'
-import { canonicalNavigationURL } from './url'
+} from './runtime.js'
+import { canonicalNavigationURL } from './url.js'
 import type {
   DocumentCodec,
   GossrAppDefinition,
   SSRRenderInput,
   SSRRenderResult,
-} from './types'
-import type { ParsedDocument } from './document'
+} from './types.js'
+import type { ParsedDocument } from './document.js'
 
 export function createSSRRenderer<Document>(
   definition: GossrAppDefinition<Document>,

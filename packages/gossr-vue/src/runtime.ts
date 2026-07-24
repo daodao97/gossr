@@ -23,21 +23,21 @@ import {
   cleanupError,
   consumeThenableRejection,
   isThenable,
-} from './lifecycle'
-import { createNavigationCoordinator, fetchNavigationOutcome } from './navigation'
-import { clearStaleClientRecovery, recoverStaleClientRoute } from './stale-client'
+} from './lifecycle.js'
+import { createNavigationCoordinator, fetchNavigationOutcome } from './navigation.js'
+import { clearStaleClientRecovery, recoverStaleClientRoute } from './stale-client.js'
 import {
   canonicalNavigationURL,
   documentURLFromRouter,
   navigationURLsMatch,
-} from './url'
-import type { ParsedDocument } from './document'
+} from './url.js'
+import type { ParsedDocument } from './document.js'
 import type {
   GossrAppDefinition,
   GossrPlatform,
   NavigationCoordinator,
-} from './types'
-import type { ManagedNavigationCoordinator } from './navigation'
+} from './types.js'
+import type { ManagedNavigationCoordinator } from './navigation.js'
 
 interface RuntimeOptions<Document> {
   platform: GossrPlatform

@@ -1,4 +1,4 @@
-import type { GossrAppDefinition, GossrAppOptions } from './types'
+import type { GossrAppDefinition, GossrAppOptions } from './types.js'
 
 const appIDPattern = /^[a-z\d](?:[a-z\d._-]{0,62}[a-z\d])?$/i
 

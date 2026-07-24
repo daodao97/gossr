@@ -1,15 +1,15 @@
-import { attachCleanupError } from './lifecycle'
-import { parseDocument } from './document'
-import { createApplicationRuntime } from './runtime'
+import { attachCleanupError } from './lifecycle.js'
+import { parseDocument } from './document.js'
+import { createApplicationRuntime } from './runtime.js'
 import {
   documentURLFromRouter,
   navigationURLsMatch,
-} from './url'
-import type { ParsedDocument } from './document'
+} from './url.js'
+import type { ParsedDocument } from './document.js'
 import type {
   GossrAppDefinition,
-} from './types'
-import type { GossrApplicationRuntime } from './runtime'
+} from './types.js'
+import type { GossrApplicationRuntime } from './runtime.js'
 
 const bootElementID = '__GOSSR_BOOT__'
 

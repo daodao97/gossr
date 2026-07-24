@@ -35,8 +35,9 @@
     "build": "tsc -p tsconfig.build.json",
     "prepare": "pnpm run build",
     "test": "vitest run",
+    "test:exports": "node scripts/check-exports.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "check": "pnpm test && pnpm typecheck && pnpm build"
+    "check": "pnpm test && pnpm typecheck && pnpm build && pnpm test:exports"
   },
   "engines": {
     "node": ">=22.18"

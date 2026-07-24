@@ -1,6 +1,6 @@
-import { isThenable } from './lifecycle'
-import { canonicalNavigationURL } from './url'
-import type { DocumentCodec } from './types'
+import { isThenable } from './lifecycle.js'
+import { canonicalNavigationURL } from './url.js'
+import type { DocumentCodec } from './types.js'
 
 export interface ParsedDocument<Document> {
   document: Document

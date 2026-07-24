@@ -1,3 +1,3 @@
-export { parseDocument } from './document'
-export { decodeNavigationOutcome } from './navigation'
-export { decodeSSRRenderInput } from './server'
+export { parseDocument } from './document.js'
+export { decodeNavigationOutcome } from './navigation.js'
+export { decodeSSRRenderInput } from './server.js'

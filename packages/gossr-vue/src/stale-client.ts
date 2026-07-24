@@ -1,4 +1,4 @@
-import { canonicalNavigationURL } from './url'
+import { canonicalNavigationURL } from './url.js'
 
 export function recoverStaleClientRoute(
   appId: string,
