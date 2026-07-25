@@ -27,7 +27,14 @@ export type NavigationOutcome<Document> =
   }
 
 export interface NavigationCoordinator<Document> {
+  /**
+   * The last committed page document. During a client navigation it keeps
+   * pointing at the previous page (stale-while-loading) so layout chrome
+   * such as the viewer never flickers; page content should gate on `ready`.
+   */
   current: Readonly<Ref<Document | undefined>>
+  /** True when `current` is the document for the active route. */
+  ready: Readonly<Ref<boolean>>
   loading: Readonly<Ref<boolean>>
   error: Readonly<Ref<Error | null>>
   refresh: () => Promise<boolean>

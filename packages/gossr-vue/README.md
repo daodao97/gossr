@@ -15,9 +15,9 @@ Application code does not create routers, histories, navigation fetchers, SSR
 apps, or hydration flows directly.
 
 The navigation object exposed to application code is deliberately small:
-`current`, `loading`, `error`, and a parameterless `refresh()`. Preparing a
-target document, cancelling stale requests, and committing it with the route
-are framework-owned details.
+`current`, `ready`, `loading`, `error`, and a parameterless `refresh()`.
+Preparing a target document, cancelling stale requests, and committing it are
+framework-owned details.
 
 The application surface is one `defineGossrApp()` call:
 
@@ -57,10 +57,12 @@ import { installGojaRenderABI } from '@daodao97/gossr-vue/server'
   asynchronous work.
 - Page documents enter through the application codec exactly once. Their URL
   must match the strict same-origin target used by the router.
-- Client route changes load and validate the complete target document before
-  Vue Router confirms the navigation. The route and document are then
-  published in one update; application pages never render against staged or
-  placeholder data.
+- The initial navigation is blocking: hydration only mounts against its own
+  boot document. In-app route changes are non-blocking: the route commits
+  immediately so clicks respond instantly, while `current` keeps the previous
+  page's document (stale-while-loading) and `ready` turns true only once the
+  target document is committed. Page content should gate on `ready`; layout
+  chrome can keep reading `current` without flicker.
 - A failed or unhandled client navigation is left to a full browser request,
   preserving the server as the final redirect and error authority.
 - External destinations stay ordinary browser links rather than entering the

@@ -73,10 +73,11 @@ describe('Vue Router 5 client initialization', () => {
     consoleError.mockRestore()
   })
 
-  it('keeps the current page intact when a pending page switch is reversed', async () => {
+  it('keeps showing the current page while a switch loads, and reversal aborts it', async () => {
     window.history.replaceState({}, '', '/dashboard/api-keys')
     const requestedURLs: string[] = []
     let billingSignal: AbortSignal | undefined
+    let resolveApiKeys: ((response: Response) => void) | undefined
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(
       async (input, init) => {
         const url = String(input)
@@ -84,14 +85,16 @@ describe('Vue Router 5 client initialization', () => {
 
         if (url.endsWith('/dashboard/billing')) {
           billingSignal = init?.signal ?? undefined
-          await new Promise<never>((_resolve, reject) => {
+          return await new Promise<never>((_resolve, reject) => {
             billingSignal?.addEventListener('abort', () => {
               reject(new DOMException('Aborted', 'AbortError'))
             }, { once: true })
           })
         }
 
-        return navigationResponse('/dashboard/api-keys', 'unexpected')
+        return await new Promise<Response>((resolve) => {
+          resolveApiKeys = resolve
+        })
       },
     )
     const runtime = createApplicationRuntime(switchingDefinition(), {
@@ -108,28 +111,43 @@ describe('Vue Router 5 client initialization', () => {
 
     await runtime.initialNavigation
     expect(fetchMock).not.toHaveBeenCalled()
+    expect(runtime.navigation.ready.value).toBe(true)
 
-    const billingNavigation = runtime.router.push('/dashboard/billing')
-    await vi.waitFor(() => {
-      expect(requestedURLs).toEqual(['/_ssr/data/dashboard/billing'])
-    })
+    // Non-blocking: the route commits immediately while data loads; the
+    // previous document stays current (stale-while-loading).
+    await runtime.router.push('/dashboard/billing')
     expect(runtime.router.currentRoute.value.fullPath)
-      .toBe('/dashboard/api-keys')
+      .toBe('/dashboard/billing')
     expect(runtime.navigation.current.value).toEqual({
       url: '/dashboard/api-keys',
       version: 'initial',
     })
+    expect(runtime.navigation.ready.value).toBe(false)
+    await vi.waitFor(() => {
+      expect(requestedURLs).toEqual(['/_ssr/data/dashboard/billing'])
+    })
 
+    // Reversing aborts the pending billing load. The api-keys document is
+    // still current, so the page is ready instantly while it revalidates.
     await runtime.router.push('/dashboard/api-keys')
-    await billingNavigation
-
-    expect(requestedURLs).toEqual(['/_ssr/data/dashboard/billing'])
     expect(billingSignal?.aborted).toBe(true)
     expect(runtime.router.currentRoute.value.fullPath)
       .toBe('/dashboard/api-keys')
     expect(runtime.navigation.current.value).toEqual({
       url: '/dashboard/api-keys',
       version: 'initial',
+    })
+    expect(runtime.navigation.ready.value).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(resolveApiKeys).toBeDefined()
+    })
+    resolveApiKeys!(navigationResponse('/dashboard/api-keys', 'revalidated'))
+    await vi.waitFor(() => {
+      expect(runtime.navigation.current.value).toEqual({
+        url: '/dashboard/api-keys',
+        version: 'revalidated',
+      })
     })
 
     runtime.dispose()
@@ -174,11 +192,11 @@ describe('Vue Router 5 client initialization', () => {
     })
 
     await runtime.initialNavigation
-    const billingNavigation = runtime.router.push('/dashboard/billing')
+    await runtime.router.push('/dashboard/billing')
     await vi.waitFor(() => {
       expect(requestedURLs).toEqual(['/_ssr/data/dashboard/billing'])
     })
-    const usageNavigation = runtime.router.push('/dashboard/usage_log')
+    await runtime.router.push('/dashboard/usage_log')
     await vi.waitFor(() => {
       expect(requestedURLs).toEqual([
         '/_ssr/data/dashboard/billing',
@@ -186,19 +204,20 @@ describe('Vue Router 5 client initialization', () => {
       ])
     })
 
-    await billingNavigation
     expect(billingSignal?.aborted).toBe(true)
     expect(usageSignal?.aborted).toBe(false)
-
-    resolveUsage(navigationResponse('/dashboard/usage_log', 'loaded'))
-    await usageNavigation
-
     expect(runtime.router.currentRoute.value.fullPath)
       .toBe('/dashboard/usage_log')
-    expect(runtime.navigation.current.value).toEqual({
-      url: '/dashboard/usage_log',
-      version: 'loaded',
+    expect(runtime.navigation.ready.value).toBe(false)
+
+    resolveUsage(navigationResponse('/dashboard/usage_log', 'loaded'))
+    await vi.waitFor(() => {
+      expect(runtime.navigation.current.value).toEqual({
+        url: '/dashboard/usage_log',
+        version: 'loaded',
+      })
     })
+    expect(runtime.navigation.ready.value).toBe(true)
 
     runtime.dispose()
     fetchMock.mockRestore()
@@ -255,7 +274,7 @@ describe('Vue Router 5 client initialization', () => {
     fetchMock.mockRestore()
   })
 
-  it('publishes the target route only after its document is ready', async () => {
+  it('publishes the target route immediately and the document when ready', async () => {
     window.history.replaceState({}, '', '/dashboard/api-keys')
     let billingSignal: AbortSignal | undefined
     let resolveBilling!: (response: Response) => void
@@ -267,30 +286,21 @@ describe('Vue Router 5 client initialization', () => {
         })
       },
     )
-    const observations: Array<{ route: string, document?: string }> = []
-    const synchronousObservations: Array<{
+    const observations: Array<{
       route: string
       document?: string
-      loading: boolean
+      ready: boolean
     }> = []
     const runtime = createApplicationRuntime(switchingDefinition(({
       router,
       navigation,
     }) => {
-      router.afterEach((to, _from, failure) => {
-        if (!failure) {
-          observations.push({
-            route: to.fullPath,
-            document: navigation.current.value?.url,
-          })
-        }
-      })
       watch(
         () => router.currentRoute.value.fullPath,
-        route => synchronousObservations.push({
+        route => observations.push({
           route,
           document: navigation.current.value?.url,
-          loading: navigation.loading.value,
+          ready: navigation.ready.value,
         }),
         { flush: 'sync' },
       )
@@ -308,39 +318,33 @@ describe('Vue Router 5 client initialization', () => {
 
     await runtime.initialNavigation
     observations.length = 0
-    synchronousObservations.length = 0
 
-    const billingNavigation = runtime.router.push('/dashboard/billing')
+    // The click responds instantly: route committed, previous document kept,
+    // ready flipped false for page-level loading states.
+    await runtime.router.push('/dashboard/billing')
+    expect(observations).toEqual([{
+      route: '/dashboard/billing',
+      document: '/dashboard/api-keys',
+      ready: false,
+    }])
+    expect(runtime.navigation.loading.value).toBe(true)
     await vi.waitFor(() => {
       expect(fetchMock).toHaveBeenCalledOnce()
     })
 
-    expect(runtime.router.currentRoute.value.fullPath)
-      .toBe('/dashboard/api-keys')
-    expect(runtime.navigation.current.value?.url)
-      .toBe('/dashboard/api-keys')
-    expect(observations).toEqual([])
+    // refresh() is rejected while a route load is pending.
     await expect(runtime.navigation.refresh()).resolves.toBe(false)
     expect(billingSignal?.aborted).toBe(false)
 
     resolveBilling(navigationResponse('/dashboard/billing', 'loaded'))
-    await billingNavigation
-
-    expect(runtime.router.currentRoute.value.fullPath)
-      .toBe('/dashboard/billing')
-    expect(runtime.navigation.current.value).toEqual({
-      url: '/dashboard/billing',
-      version: 'loaded',
+    await vi.waitFor(() => {
+      expect(runtime.navigation.current.value).toEqual({
+        url: '/dashboard/billing',
+        version: 'loaded',
+      })
     })
-    expect(observations).toEqual([{
-      route: '/dashboard/billing',
-      document: '/dashboard/billing',
-    }])
-    expect(synchronousObservations).toEqual([{
-      route: '/dashboard/billing',
-      document: '/dashboard/billing',
-      loading: false,
-    }])
+    expect(runtime.navigation.ready.value).toBe(true)
+    expect(runtime.navigation.loading.value).toBe(false)
 
     runtime.dispose()
     fetchMock.mockRestore()
@@ -366,13 +370,14 @@ describe('Vue Router 5 client initialization', () => {
     })
 
     await runtime.initialNavigation
-    const failure = await runtime.router.push('/dashboard/billing')
+    await runtime.router.push('/dashboard/billing')
 
-    expect(isNavigationFailure(failure, NavigationFailureType.aborted)).toBe(true)
-    expect(navigateDocument).toHaveBeenCalledOnce()
+    // The route commits optimistically; when its data turns out invalid the
+    // framework hands the target to a full browser navigation.
+    await vi.waitFor(() => {
+      expect(navigateDocument).toHaveBeenCalledOnce()
+    })
     expect(navigateDocument).toHaveBeenCalledWith('/dashboard/billing')
-    expect(runtime.router.currentRoute.value.fullPath)
-      .toBe('/dashboard/api-keys')
     expect(runtime.navigation.current.value).toEqual({
       url: '/dashboard/api-keys',
       version: 'initial',
@@ -494,14 +499,18 @@ describe('Vue Router 5 client initialization', () => {
     await runtime.initialNavigation
     await runtime.router.push('/dashboard/billing')
 
+    await vi.waitFor(() => {
+      expect(runtime.router.currentRoute.value.fullPath)
+        .toBe('/dashboard/usage_log')
+    })
+    await vi.waitFor(() => {
+      expect(runtime.navigation.current.value?.url)
+        .toBe('/dashboard/usage_log')
+    })
     expect(requestedURLs).toEqual([
       '/_ssr/data/dashboard/billing',
       '/_ssr/data/dashboard/usage_log',
     ])
-    expect(runtime.router.currentRoute.value.fullPath)
-      .toBe('/dashboard/usage_log')
-    expect(runtime.navigation.current.value?.url)
-      .toBe('/dashboard/usage_log')
 
     runtime.dispose()
     fetchMock.mockRestore()
