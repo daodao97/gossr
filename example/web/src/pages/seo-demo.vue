@@ -16,17 +16,10 @@ import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { useLocaleText } from '~/composables/useLocaleText'
-import { useSsrData } from '~/composables/useSsrData'
-
-interface ExamplePayload {
-  message?: string
-  path?: string
-  query?: string
-  generatedAt?: string
-}
+import { usePage } from '~/composables/usePageDocument'
 
 const route = useRoute()
-const payload = useSsrData<ExamplePayload>()
+const page = usePage()
 const { t } = useLocaleText()
 
 const seoTitle = computed(() => {
@@ -37,7 +30,7 @@ const seoTitle = computed(() => {
 })
 
 const seoDescription = computed(() => {
-  const generatedAt = payload.value.generatedAt ?? '-'
+  const generatedAt = page.value?.generated_at ?? '-'
   return t('page.seo.descTemplate', { generatedAt })
 })
 </script>
@@ -54,9 +47,9 @@ const seoDescription = computed(() => {
     <h2>{{ t('page.seo.title') }}</h2>
     <p><strong>{{ t('common.field.title') }}:</strong> {{ seoTitle }}</p>
     <p><strong>{{ t('common.field.description') }}:</strong> {{ seoDescription }}</p>
-    <p><strong>{{ t('common.field.message') }}:</strong> {{ payload.message ?? t('common.empty') }}</p>
-    <p><strong>{{ t('common.field.path') }}:</strong> {{ payload.path ?? '-' }}</p>
-    <p><strong>{{ t('common.field.query') }}:</strong> {{ payload.query ?? '-' }}</p>
+    <p><strong>{{ t('common.field.message') }}:</strong> {{ page?.message || t('common.empty') }}</p>
+    <p><strong>{{ t('common.field.path') }}:</strong> {{ route.path }}</p>
+    <p><strong>{{ t('common.field.query') }}:</strong> {{ route.fullPath.includes('?') ? route.fullPath.split('?')[1] : '-' }}</p>
     <p class="tip">{{ t('page.seo.tip') }}</p>
   </section>
 </template>

@@ -30,8 +30,15 @@ func TestExampleBundleRetainedHeap(t *testing.T) {
 	r := NewRenderer(script)
 	t.Cleanup(r.pool.Close)
 	payload := map[string]any{
-		"title":   "gojs heap diagnostic",
-		"message": "render a representative payload",
+		"schema_version": 1,
+		"url":            "/benchmark",
+		"locale":         "en",
+		"session":        nil,
+		"page": map[string]any{
+			"kind":         "home",
+			"message":      "render a representative payload",
+			"generated_at": "2026-07-25T00:00:00Z",
+		},
 	}
 
 	for i := 0; i < 50; i++ {
@@ -54,7 +61,7 @@ func TestExampleBundleRetainedHeap(t *testing.T) {
 	t.Logf("renders=%d heap_alloc=%d", totalRenders, previous)
 	for _, renders := range []int{250, 500, 1000, 2000} {
 		for i := 0; i < renders; i++ {
-			if _, err := r.Render(context.Background(), "/benchmark?q=gojs", payload); err != nil {
+			if _, err := r.Render(context.Background(), "/benchmark", payload); err != nil {
 				t.Fatalf("render: %v", err)
 			}
 		}
@@ -83,6 +90,20 @@ func TestExampleBundleIsIsolatedAcrossReusedRuntime(t *testing.T) {
 	r := NewRenderer(string(script))
 	t.Cleanup(r.pool.Close)
 
+	document := func(url, message string, session map[string]any) map[string]any {
+		return map[string]any{
+			"schema_version": 1,
+			"url":            url,
+			"locale":         "en",
+			"session":        session,
+			"page": map[string]any{
+				"kind":         "seo",
+				"message":      message,
+				"generated_at": "2026-07-25T00:00:00Z",
+			},
+		}
+	}
+
 	tests := []struct {
 		name        string
 		url         string
@@ -94,55 +115,30 @@ func TestExampleBundleIsIsolatedAcrossReusedRuntime(t *testing.T) {
 		{
 			name:     "english seo",
 			url:      "/seo-demo?title=FirstTitle",
-			payload:  map[string]any{"locale": "en", "generatedAt": "first"},
+			payload:  document("/seo-demo?title=FirstTitle", "first message", nil),
 			wantHTML: "FirstTitle",
 			wantHead: "FirstTitle",
 		},
 		{
-			name:        "chinese seo replaces previous route state",
-			url:         "/zh/seo-demo?title=SecondTitle",
-			payload:     map[string]any{"locale": "zh", "generatedAt": "second"},
+			name:        "second seo replaces previous route state",
+			url:         "/seo-demo?title=SecondTitle",
+			payload:     document("/seo-demo?title=SecondTitle", "second message", nil),
 			wantHTML:    "SecondTitle",
 			wantHead:    "SecondTitle",
 			rejectValue: "FirstTitle",
 		},
 		{
-			name:     "authenticated session",
-			url:      "/session-demo",
-			payload:  map[string]any{"locale": "en", "session": map[string]any{"user": map[string]any{"email": "first@example.com"}}},
+			name: "authenticated session",
+			url:  "/session-demo",
+			payload: document("/session-demo", "session message", map[string]any{
+				"user": map[string]any{"email": "first@example.com"},
+			}),
 			wantHTML: "first@example.com",
-		},
-		{
-			name:     "authenticated protected route",
-			url:      "/protected",
-			payload:  map[string]any{"locale": "en", "session": map[string]any{"user": map[string]any{"email": "protected@example.com"}}},
-			wantHTML: "protected@example.com",
-		},
-		{
-			name:        "anonymous protected route redirects every time",
-			url:         "/protected",
-			payload:     map[string]any{"locale": "en"},
-			wantHTML:    "Session",
-			rejectValue: "protected@example.com",
-		},
-		{
-			name:        "localized anonymous protected route redirects",
-			url:         "/zh/protected?tab=profile",
-			payload:     map[string]any{"locale": "zh"},
-			wantHTML:    "Session Cookie 示例",
-			rejectValue: "protected@example.com",
-		},
-		{
-			name:        "anonymous protected route with trailing slash redirects",
-			url:         "/protected/",
-			payload:     map[string]any{"locale": "en"},
-			wantHTML:    "Session Cookie Demo",
-			rejectValue: "protected@example.com",
 		},
 		{
 			name:        "anonymous request does not inherit session",
 			url:         "/",
-			payload:     map[string]any{"locale": "en", "message": "anonymous"},
+			payload:     document("/", "anonymous", nil),
 			wantHTML:    "anonymous",
 			rejectValue: "first@example.com",
 		},

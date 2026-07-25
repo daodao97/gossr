@@ -16,16 +16,9 @@ import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { useLocaleText } from '~/composables/useLocaleText'
-import { useSsrData } from '~/composables/useSsrData'
+import { usePage } from '~/composables/usePageDocument'
 
-interface ExamplePayload {
-  message?: string
-  path?: string
-  query?: string
-  generatedAt?: string
-}
-
-const payload = useSsrData<ExamplePayload>()
+const page = usePage()
 const route = useRoute()
 const { t } = useLocaleText()
 const title = computed(() => {
@@ -38,10 +31,10 @@ const title = computed(() => {
   <section class="card">
     <h2>{{ t('page.hiVue.title') }}</h2>
     <p><strong>{{ t('common.field.title') }}:</strong> {{ title }}</p>
-    <p><strong>{{ t('common.field.message') }}:</strong> {{ payload.message ?? t('common.empty') }}</p>
-    <p><strong>{{ t('common.field.path') }}:</strong> {{ payload.path ?? '-' }}</p>
-    <p><strong>{{ t('common.field.query') }}:</strong> {{ payload.query ?? '-' }}</p>
-    <p><strong>{{ t('common.field.generatedAt') }}:</strong> {{ payload.generatedAt ?? '-' }}</p>
+    <p><strong>{{ t('common.field.message') }}:</strong> {{ page?.message || t('common.empty') }}</p>
+    <p><strong>{{ t('common.field.path') }}:</strong> {{ route.path }}</p>
+    <p><strong>{{ t('common.field.query') }}:</strong> {{ route.fullPath.includes('?') ? route.fullPath.split('?')[1] : '-' }}</p>
+    <p><strong>{{ t('common.field.generatedAt') }}:</strong> {{ page?.generated_at ?? '-' }}</p>
   </section>
 </template>
 

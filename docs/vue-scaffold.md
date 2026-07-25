@@ -73,7 +73,7 @@ go mod tidy
 go run .
 ```
 
-生成的 `main.go` 已经把 `web.Dist` 传入 `gossr.SsrWithOptions`，并注册了一个首页 payload。身份认证仍由宿主中间件和 `SessionResolver` 负责。
+生成的 `main.go` 已经把 `web.Dist` 传入 `gossr.New` 并注册了一个 `resolvePage`。身份认证仍由宿主中间件或 resolver 负责。
 
 ## 已有 Go 项目只添加前端
 
@@ -85,7 +85,7 @@ go run github.com/daodao97/gossr/cmd/gossr-init@latest \
   --template minimal
 ```
 
-需要布局、自动导航和 Head 示例时，将模板改成 `full`。生成后需要在宿主中自行把 `web.Dist` 接入 `gossr.SsrWithOptions`。
+需要布局、自动导航和 Head 示例时，将模板改成 `full`。生成后需要在宿主中自行把 `web.Dist` 接入 `gossr.New(...).MountGin(...)`。
 
 ## 已有项目迁移
 

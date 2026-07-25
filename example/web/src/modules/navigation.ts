@@ -13,8 +13,6 @@ declare module 'vue-router' {
   interface RouteMeta {
     layout?: string
     nav?: NavigationRouteMeta
-    requiresAuth?: boolean
-    ssrData?: boolean
   }
 }
 

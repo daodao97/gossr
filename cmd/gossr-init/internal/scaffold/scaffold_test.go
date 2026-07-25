@@ -62,7 +62,7 @@ func TestGenerateRefusesConflictBeforeWriting(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
 		t.Fatalf("expected conflict, got %v", err)
 	}
-	if _, statErr := os.Stat(filepath.Join(dir, "src", "main.ts")); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(filepath.Join(dir, "src", "app.ts")); !os.IsNotExist(statErr) {
 		t.Fatalf("preflight should prevent partial output, stat error: %v", statErr)
 	}
 	content, readErr := os.ReadFile(filepath.Join(dir, "package.json"))
@@ -136,7 +136,7 @@ func TestGenerateFullstack(t *testing.T) {
 		"main.go":          `frontend "example.com/my-app/web"`,
 		"web/embed.go":     "package web",
 		"web/package.json": `"name": "my-app"`,
-		"web/src/main.ts":  "createAppRouter",
+		"web/src/app.ts":   "defineGossrApp",
 	}
 	for path, expected := range checks {
 		content, readErr := os.ReadFile(filepath.Join(dir, filepath.FromSlash(path)))

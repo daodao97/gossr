@@ -46,6 +46,10 @@ export function gossrVuePreset(options: GossrVuePresetOptions): UserConfig {
       alias: {
         '~': sourceDir,
       },
+      // 当 gossr-vue 通过 workspace/file 链接安装时,它与应用可能各带一份
+      // vue/vue-router。两份 vue-router 的 injection key 不相等,SSR 会静默
+      // 渲染出空文档,dedupe 保证全局单实例。
+      dedupe: ['vue', 'vue-router', '@vue/server-renderer'],
     },
     build: {
       target: GOJA_BUILD_TARGET,

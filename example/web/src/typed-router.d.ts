@@ -59,13 +59,6 @@ declare module 'vue-router/auto-routes' {
       Record<never, never>,
       | never
     >,
-    '/no-ssr-fetch': RouteRecordInfo<
-      '/no-ssr-fetch',
-      '/no-ssr-fetch',
-      Record<never, never>,
-      Record<never, never>,
-      | never
-    >,
     '/protected': RouteRecordInfo<
       '/protected',
       '/protected',
@@ -141,14 +134,6 @@ declare module 'vue-router/auto-routes' {
     'src/pages/hi/vue.vue': {
       routes:
         | '/hi/vue'
-      views:
-        | never
-      pathParamNames:
-        | never
-    }
-    'src/pages/no-ssr-fetch.vue': {
-      routes:
-        | '/no-ssr-fetch'
       views:
         | never
       pathParamNames:

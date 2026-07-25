@@ -2,10 +2,11 @@
 import { Fragment, computed } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 
-import { useSsrData } from '~/composables/useSsrData'
+import { useNavigation } from '~/composables/usePageDocument'
 import { layouts } from '~/modules/layouts'
 
 const route = useRoute()
+const navigation = useNavigation()
 
 // 未配置 layout 或 layout 不存在时，直接渲染页面。
 const currentLayout = computed(() => {
@@ -15,12 +16,10 @@ const currentLayout = computed(() => {
 
   return layouts[layoutName] ?? Fragment
 })
-
-const ssrState = useSsrData<{ __ssrFetchLoading?: boolean }>()
 </script>
 
 <template>
-  <div v-if="ssrState.__ssrFetchLoading === true" class="global-fetch-loading" />
+  <div v-if="navigation.loading.value" class="global-fetch-loading" />
   <RouterView v-slot="{ Component }">
     <component :is="currentLayout">
       <component :is="Component" v-if="Component" />

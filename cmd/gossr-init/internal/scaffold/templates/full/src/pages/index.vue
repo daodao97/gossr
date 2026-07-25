@@ -1,19 +1,18 @@
-<route lang="yaml">
-meta:
-  nav:
-    label: Home
-    order: 10
+<route lang="json">
+{
+  "meta": {
+    "nav": {
+      "label": "Home",
+      "order": 10
+    }
+  }
+}
 </route>
 
 <script setup lang="ts">
-import { useSsrData } from '~/composables/useSsrData'
+import { usePage } from '~/composables'
 
-interface HomePayload {
-  message?: string
-  path?: string
-}
-
-const payload = useSsrData<HomePayload>()
+const page = usePage()
 </script>
 
 <template>
@@ -22,7 +21,7 @@ const payload = useSsrData<HomePayload>()
       <meta name="description" content="A gossr application" />
     </Teleport>
     <h1>gossr is ready</h1>
-    <p>{{ payload.message ?? 'Add a payload handler in the Go host.' }}</p>
-    <small>Path: {{ payload.path ?? '/' }}</small>
+    <p>{{ page?.message || 'Return a page document from the Go resolver.' }}</p>
+    <small>Generated at: {{ page?.generated_at ?? '-' }}</small>
   </main>
 </template>

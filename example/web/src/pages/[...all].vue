@@ -1,7 +1,6 @@
 <route lang="yaml">
 meta:
   layout: not-found
-  ssrData: false
   nav:
     labelKey: layout.nav.notFound
     order: 100

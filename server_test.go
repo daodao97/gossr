@@ -4,16 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
-	"runtime"
-	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -22,6 +16,12 @@ import (
 
 	"github.com/daodao97/gossr/renderer"
 )
+
+type mapPayload map[string]any
+
+func (m mapPayload) AsMap() map[string]any {
+	return m
+}
 
 type testRenderer func(ctx context.Context, urlPath string, payload map[string]any) (renderer.Result, error)
 
@@ -72,22 +72,6 @@ func performRequest(handler http.Handler, method, target string, setup func(*htt
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	return w
-}
-
-func withTestSSREngine(t *testing.T, register func(*gin.Engine)) {
-	t.Helper()
-
-	oldEngine := SsrEngine
-	engine := gin.New()
-	engine.Use(gin.Recovery())
-	if register != nil {
-		register(engine)
-	}
-	SsrEngine = engine
-
-	t.Cleanup(func() {
-		SsrEngine = oldEngine
-	})
 }
 
 func addSessionTokenCookie(req *http.Request, token string) {
@@ -147,40 +131,6 @@ func TestRenderWithTimeoutDoesNotRunAfterSemaphoreWaitTimeout(t *testing.T) {
 	case <-called:
 		t.Fatalf("renderer should not run after timeout while waiting semaphore")
 	case <-time.After(60 * time.Millisecond):
-	}
-}
-
-func TestRenderConcurrencyLimit(t *testing.T) {
-	defaultLimit := runtime.GOMAXPROCS(0)
-	tests := []struct {
-		name        string
-		envValue    string
-		want        int
-		logContains string
-	}{
-		{name: "default", envValue: "", want: defaultLimit},
-		{name: "invalid", envValue: "abc", want: defaultLimit, logContains: "invalid SSR_RENDER_LIMIT"},
-		{name: "negative", envValue: "-1", want: defaultLimit, logContains: "invalid SSR_RENDER_LIMIT"},
-		{name: "zero unlimited", envValue: "0", want: 0, logContains: "SSR_RENDER_LIMIT=0"},
-		{name: "clamped", envValue: strconv.Itoa(maxSSRRenderLimit + 100), want: maxSSRRenderLimit, logContains: "clamped"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("SSR_RENDER_LIMIT", tt.envValue)
-
-			var got int
-			logOutput := captureLogOutput(t, func() {
-				got = renderConcurrencyLimit()
-			})
-
-			if got != tt.want {
-				t.Fatalf("renderConcurrencyLimit()=%d, want %d", got, tt.want)
-			}
-			if tt.logContains != "" && !strings.Contains(logOutput, tt.logContains) {
-				t.Fatalf("expected log to contain %q, got %q", tt.logContains, logOutput)
-			}
-		})
 	}
 }
 
@@ -291,748 +241,6 @@ func TestApplyHTMLLangUsesTheStructuralHTMLTag(t *testing.T) {
 	}
 }
 
-func TestStructuralHeadAndBootInjectionIgnoreScriptText(t *testing.T) {
-	const script = `<script>` +
-		`const fakeHead = "</head>";` +
-		`const fakeBody = "</body>";` +
-		`const fakeTitle = "<title>script title</title>";` +
-		`</script>`
-	html := `<!doctype html><html><head>` + script +
-		`<title>template title</title></head><body><main>page</main>` +
-		`<svg><title>icon title</title></svg></body></html>`
-
-	withHead := injectHeadContent(
-		html,
-		`<title>route title</title><meta name="description" content="route">`,
-	)
-	if !strings.Contains(withHead, script) {
-		t.Fatalf("head injection changed script text: %s", withHead)
-	}
-	if strings.Contains(withHead, "<title>template title</title>") {
-		t.Fatalf("head injection retained the structural template title: %s", withHead)
-	}
-	if !strings.Contains(withHead, "<svg><title>icon title</title></svg>") {
-		t.Fatalf("head injection removed an accessible SVG title: %s", withHead)
-	}
-	if !strings.Contains(withHead, "<title>route title</title>") {
-		t.Fatalf("head injection omitted the route title: %s", withHead)
-	}
-	if strings.Index(withHead, "<title>route title</title>") <
-		strings.Index(withHead, "</script>") {
-		t.Fatalf("head content was injected into script text: %s", withHead)
-	}
-
-	withBoot, err := injectSSRBootData(withHead, map[string]any{"ok": true})
-	if err != nil {
-		t.Fatalf("injectSSRBootData: %v", err)
-	}
-	if !strings.Contains(withBoot, script) {
-		t.Fatalf("boot injection changed script text: %s", withBoot)
-	}
-	bootAt := strings.Index(withBoot, `id="__GOSSR_BOOT__"`)
-	if bootAt < strings.Index(withBoot, "</script>") ||
-		bootAt > strings.LastIndex(withBoot, "</head>") {
-		t.Fatalf("boot data was not inserted before the structural head end: %s", withBoot)
-	}
-
-	withLegacyData, err := injectSSRData(html, map[string]any{"ok": true})
-	if err != nil {
-		t.Fatalf("injectSSRData: %v", err)
-	}
-	if !strings.Contains(withLegacyData, script) {
-		t.Fatalf("legacy data injection changed script text: %s", withLegacyData)
-	}
-	legacyDataAt := strings.Index(withLegacyData, `id="ssr-data"`)
-	if legacyDataAt < strings.Index(withLegacyData, "</script>") ||
-		legacyDataAt > strings.LastIndex(withLegacyData, "</head>") {
-		t.Fatalf("legacy data was not inserted before the structural head end: %s", withLegacyData)
-	}
-}
-
-func TestNewDevProxyRejectsInvalidURL(t *testing.T) {
-	for _, rawURL := range []string{"localhost:3333", "ftp://example.com", "://bad"} {
-		t.Run(rawURL, func(t *testing.T) {
-			defer func() {
-				if recover() == nil {
-					t.Fatalf("expected invalid DEV_SERVER_URL %q to panic", rawURL)
-				}
-			}()
-			_ = newDevProxy(rawURL)
-		})
-	}
-}
-
-func TestEnrichPayloadFromRequestWithForwardedOrigin(t *testing.T) {
-	t.Setenv("TRUST_FORWARDED_HEADERS", "1")
-
-	req := httptest.NewRequest(http.MethodGet, "/zh/demo", nil)
-	req.Host = "10.0.0.12:8080"
-	req.Header.Set("X-Forwarded-Host", "app.example.com")
-	req.Header.Set("X-Forwarded-Proto", "https")
-	req.Header.Set("X-Forwarded-Port", "443")
-
-	enriched, err := enrichPayloadFromRequest(map[string]any{"foo": "bar"}, req, nil)
-	if err != nil {
-		t.Fatalf("enrich payload failed: %v", err)
-	}
-	if got, _ := enriched["foo"].(string); got != "bar" {
-		t.Fatalf("expected foo field to be preserved, got %#v", enriched["foo"])
-	}
-	if got, _ := enriched["siteOrigin"].(string); got != "https://app.example.com:443" {
-		t.Fatalf("expected siteOrigin from forwarded headers, got %#v", enriched["siteOrigin"])
-	}
-	if got, _ := enriched["locale"].(string); got != "zh" {
-		t.Fatalf("expected locale=zh, got %#v", enriched["locale"])
-	}
-}
-
-func TestRouterFetchDoesNotInjectSessionInSSRFetchResponse(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	withTestSSREngine(t, func(engine *gin.Engine) {
-		engine.GET("/session-demo", func(c *gin.Context) {
-			token, _ := c.Cookie("session_token")
-			c.JSON(http.StatusOK, gin.H{
-				"path":         c.Request.URL.Path,
-				"handlerToken": token,
-			})
-		})
-	})
-
-	router := gin.New()
-	Router(router.Group(DefaultSSRDataRoute))
-
-	const sessionToken = "opaque-token-forwarded-to-host-handler"
-
-	w := performRequest(router, http.MethodGet, DefaultSSRDataRoute+"/session-demo", func(req *http.Request) {
-		req.Host = "127.0.0.1:8080"
-		req.Header.Set("Origin", "http://127.0.0.1:8080")
-		addSessionTokenCookie(req, sessionToken)
-	})
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d, body=%s", w.Code, w.Body.String())
-	}
-	assertNoCacheHeaders(t, w.Header())
-
-	var body map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode response failed: %v", err)
-	}
-
-	if got, ok := body["handlerToken"].(string); !ok || got != sessionToken {
-		t.Fatalf("expected handlerToken=%q, got %#v", sessionToken, body["handlerToken"])
-	}
-
-	if _, exists := body["session"]; exists {
-		t.Fatalf("expected no session in /_ssr/data response, got %#v", body["session"])
-	}
-}
-
-func TestRouterWithEngineRejectsInvalidJSONResponse(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	engine := NewDataEngine()
-	engine.GET("/invalid", func(c *gin.Context) {
-		c.Data(http.StatusOK, "text/plain", []byte("not-json"))
-	})
-
-	router := gin.New()
-	RouterWithEngine(router.Group(DefaultSSRDataRoute), engine)
-	w := performRequest(router, http.MethodGet, DefaultSSRDataRoute+"/invalid", func(req *http.Request) {
-		req.Host = "example.com"
-		req.Header.Set("Origin", "http://example.com")
-	})
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("invalid JSON must not be returned as success: status=%d body=%q", w.Code, w.Body.String())
-	}
-	if strings.Contains(w.Body.String(), "not-json") {
-		t.Fatalf("invalid backend body leaked to client: %q", w.Body.String())
-	}
-}
-
-func TestRouterWithEngineAppliesFetchGuardByDefault(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	engine := NewDataEngine()
-	engine.GET("/private", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"private": true})
-	})
-
-	router := gin.New()
-	RouterWithEngine(router.Group(DefaultSSRDataRoute), engine)
-	w := performRequest(router, http.MethodGet, DefaultSSRDataRoute+"/private", func(req *http.Request) {
-		req.Host = "example.com"
-	})
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("public RouterWithEngine bypassed fetch guard: status=%d body=%q", w.Code, w.Body.String())
-	}
-	assertNoCacheHeaders(t, w.Header())
-}
-
-func TestResolveWithEngineKeepsDataRoutesIsolated(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	engineA := NewDataEngine()
-	engineB := NewDataEngine()
-	engineA.GET("/same", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"owner": "a"})
-	})
-	engineB.GET("/same", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"owner": "b"})
-	})
-
-	payloadA, status, err := ResolveWithEngine(context.Background(), engineA, "/same", "")
-	if err != nil || status != http.StatusOK {
-		t.Fatalf("resolve engine A: status=%d err=%v", status, err)
-	}
-	payloadB, status, err := ResolveWithEngine(context.Background(), engineB, "/same", "")
-	if err != nil || status != http.StatusOK {
-		t.Fatalf("resolve engine B: status=%d err=%v", status, err)
-	}
-	if payloadA.AsMap()["owner"] != "a" || payloadB.AsMap()["owner"] != "b" {
-		t.Fatalf("data routes crossed engines: a=%#v b=%#v", payloadA.AsMap(), payloadB.AsMap())
-	}
-}
-
-func TestResolveWithEnginePreservesTrailingSlash(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	engine := NewDataEngine()
-	engine.GET("/trailing/", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"path": c.Request.URL.Path})
-	})
-
-	payload, status, err := ResolveWithEngine(context.Background(), engine, "/trailing/", "a=1")
-	if err != nil || status != http.StatusOK {
-		t.Fatalf("resolve trailing slash: status=%d err=%v", status, err)
-	}
-	if got := payload.AsMap()["path"]; got != "/trailing/" {
-		t.Fatalf("request path was normalized unexpectedly: %#v", got)
-	}
-}
-
-func TestSsrWithOptionsUsesInjectedDataEngineAndGenericFS(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	t.Setenv("DEV_MODE", "")
-
-	dataEngine := NewDataEngine()
-	dataEngine.GET("/page", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"owner": "isolated-engine"})
-	})
-	dist := fstest.MapFS{
-		"dist/client/index.html":    {Data: []byte(testIndexHTML)},
-		"dist/client/assets/app.js": {Data: []byte("app")},
-		"dist/server/server.js":     {Data: []byte("external renderer input")},
-	}
-	router := gin.New()
-	err := SsrWithOptions(router, dist, Options{
-		DataEngine: dataEngine,
-		RendererFactory: func(string) renderer.Renderer {
-			return testRenderer(func(_ context.Context, _ string, payload map[string]any) (renderer.Result, error) {
-				return renderer.Result{HTML: "<main>" + fmt.Sprint(payload["owner"]) + "</main>"}, nil
-			})
-		},
-	})
-	if err != nil {
-		t.Fatalf("SsrWithOptions failed: %v", err)
-	}
-
-	w := performRequest(router, http.MethodGet, "/page", nil)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "isolated-engine") {
-		t.Fatalf("injected data engine was not used: status=%d body=%q", w.Code, w.Body.String())
-	}
-}
-
-func TestSsrWithOptionsReturnsStartupErrors(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	t.Setenv("DEV_MODE", "")
-
-	t.Run("nil gin engine", func(t *testing.T) {
-		if err := SsrWithOptions(nil, fstest.MapFS{}, Options{}); err == nil {
-			t.Fatal("expected nil gin engine error")
-		}
-	})
-
-	t.Run("nil filesystem", func(t *testing.T) {
-		if err := SsrWithOptions(gin.New(), nil, Options{}); err == nil {
-			t.Fatal("expected nil filesystem error")
-		}
-	})
-
-	t.Run("missing server entry", func(t *testing.T) {
-		dist := fstest.MapFS{
-			"dist/client/index.html":    {Data: []byte(testIndexHTML)},
-			"dist/client/assets/app.js": {Data: []byte("app")},
-			"dist/server/.keep":         {Data: nil},
-		}
-		if err := SsrWithOptions(gin.New(), dist, Options{}); err == nil || !strings.Contains(err.Error(), "server.js") {
-			t.Fatalf("expected server.js error, got %v", err)
-		}
-	})
-
-	t.Run("renderer factory panic", func(t *testing.T) {
-		dist := fstest.MapFS{
-			"dist/client/index.html":    {Data: []byte(testIndexHTML)},
-			"dist/client/assets/app.js": {Data: []byte("app")},
-			"dist/server/server.js":     {Data: []byte("script")},
-		}
-		err := SsrWithOptions(gin.New(), dist, Options{
-			RendererFactory: func(string) renderer.Renderer { panic("broken adapter") },
-		})
-		if err == nil || !strings.Contains(err.Error(), "broken adapter") {
-			t.Fatalf("expected renderer creation error, got %v", err)
-		}
-	})
-
-	t.Run("nil renderer", func(t *testing.T) {
-		dist := fstest.MapFS{
-			"dist/client/index.html":    {Data: []byte(testIndexHTML)},
-			"dist/client/assets/app.js": {Data: []byte("app")},
-			"dist/server/server.js":     {Data: []byte("script")},
-		}
-		err := SsrWithOptions(gin.New(), dist, Options{
-			RendererFactory: func(string) renderer.Renderer { return nil },
-		})
-		if err == nil || !strings.Contains(err.Error(), "returned nil") {
-			t.Fatalf("expected nil renderer error, got %v", err)
-		}
-	})
-
-	t.Run("invalid site origin", func(t *testing.T) {
-		dist := fstest.MapFS{
-			"dist/client/index.html":    {Data: []byte(testIndexHTML)},
-			"dist/client/assets/app.js": {Data: []byte("app")},
-			"dist/server/server.js":     {Data: []byte("script")},
-		}
-		err := SsrWithOptions(gin.New(), dist, Options{
-			SiteOrigin: "https://user:password@example.com/path?q=secret",
-			RendererFactory: func(string) renderer.Renderer {
-				return testRenderer(func(context.Context, string, map[string]any) (renderer.Result, error) {
-					return renderer.Result{}, nil
-				})
-			},
-		})
-		if err == nil || !strings.Contains(err.Error(), "invalid SiteOrigin") {
-			t.Fatalf("expected SiteOrigin validation error, got %v", err)
-		}
-	})
-}
-
-func TestSsrWithOptionsClosesRendererOnShutdown(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	t.Setenv("DEV_MODE", "")
-
-	ctx, cancel := context.WithCancel(context.Background())
-	instance := &closeTrackingRenderer{closed: make(chan struct{})}
-	dist := fstest.MapFS{
-		"dist/client/index.html":    {Data: []byte(testIndexHTML)},
-		"dist/client/assets/app.js": {Data: []byte("app")},
-		"dist/server/server.js":     {Data: []byte("script")},
-	}
-	err := SsrWithOptions(gin.New(), dist, Options{
-		ShutdownContext: ctx,
-		RendererFactory: func(string) renderer.Renderer {
-			return instance
-		},
-	})
-	if err != nil {
-		t.Fatalf("SsrWithOptions failed: %v", err)
-	}
-
-	cancel()
-	select {
-	case <-instance.closed:
-	case <-time.After(time.Second):
-		t.Fatal("renderer was not closed after shutdown")
-	}
-}
-
-func TestSsrWithOptionsUsesHostFetchAuthorizer(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	t.Setenv("DEV_MODE", "")
-
-	dataEngine := NewDataEngine()
-	dataEngine.GET("/private", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"ok": true})
-	})
-	dist := fstest.MapFS{
-		"dist/client/index.html":    {Data: []byte(testIndexHTML)},
-		"dist/client/assets/app.js": {Data: []byte("app")},
-		"dist/server/server.js":     {Data: []byte("script")},
-	}
-	router := gin.New()
-	err := SsrWithOptions(router, dist, Options{
-		DataEngine: dataEngine,
-		SSRFetchAuthorizer: func(req *http.Request) (int, bool) {
-			return http.StatusUnauthorized, req.Header.Get("Authorization") == "Bearer allowed"
-		},
-		RendererFactory: func(string) renderer.Renderer {
-			return testRenderer(func(context.Context, string, map[string]any) (renderer.Result, error) {
-				return renderer.Result{HTML: "<main>ok</main>"}, nil
-			})
-		},
-	})
-	if err != nil {
-		t.Fatalf("SsrWithOptions failed: %v", err)
-	}
-
-	denied := performRequest(router, http.MethodGet, DefaultSSRDataRoute+"/private", nil)
-	if denied.Code != http.StatusUnauthorized {
-		t.Fatalf("host authorizer did not reject request: %d", denied.Code)
-	}
-	allowed := performRequest(router, http.MethodGet, DefaultSSRDataRoute+"/private", func(req *http.Request) {
-		req.Header.Set("Authorization", "Bearer allowed")
-	})
-	if allowed.Code != http.StatusOK {
-		t.Fatalf("host authorizer did not allow request: %d body=%s", allowed.Code, allowed.Body.String())
-	}
-}
-
-func TestRunBlockingConfiguredSiteOriginOverridesHost(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	t.Setenv("DEV_MODE", "")
-
-	router := gin.New()
-	RunBlocking(router, FrontendBuild{
-		FrontendDist: testFrontendDistFS(),
-		ServerDist: fstest.MapFS{
-			"server.js": {Data: []byte("external renderer input")},
-		},
-		SiteOrigin: "https://canonical.example.com",
-		RendererFactory: func(string) renderer.Renderer {
-			return testRenderer(func(_ context.Context, _ string, payload map[string]any) (renderer.Result, error) {
-				return renderer.Result{HTML: "<main>" + fmt.Sprint(payload["siteOrigin"]) + "</main>"}, nil
-			})
-		},
-	}, nil)
-
-	w := performRequest(router, http.MethodGet, "/", func(req *http.Request) {
-		req.Host = "attacker-controlled.example"
-	})
-	if !strings.Contains(w.Body.String(), "https://canonical.example.com") || strings.Contains(w.Body.String(), "attacker-controlled.example") {
-		t.Fatalf("configured SiteOrigin was not authoritative: %q", w.Body.String())
-	}
-}
-
-func TestEnrichPayloadFromRequestInjectsSessionForSSRRender(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/session-demo", nil)
-	req.Host = "127.0.0.1:8080"
-
-	addSessionTokenCookie(req, "opaque-host-token")
-
-	resolver := func(ctx context.Context, gotReq *http.Request) (map[string]any, error) {
-		if ctx != req.Context() {
-			t.Fatal("resolver did not receive request context")
-		}
-		cookie, err := gotReq.Cookie("session_token")
-		if err != nil || cookie.Value != "opaque-host-token" {
-			t.Fatalf("resolver received unexpected cookie: cookie=%#v err=%v", cookie, err)
-		}
-		return map[string]any{
-			"user": map[string]any{
-				"email": "demo@example.com",
-			},
-		}, nil
-	}
-
-	enriched, err := enrichPayloadFromRequest(map[string]any{"foo": "bar"}, req, resolver)
-	if err != nil {
-		t.Fatalf("enrich payload failed: %v", err)
-	}
-	session, ok := enriched["session"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected session object in enriched payload, got %#v", enriched["session"])
-	}
-
-	user, ok := session["user"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected session.user object, got %#v", session["user"])
-	}
-
-	if got, ok := user["email"].(string); !ok || got != "demo@example.com" {
-		t.Fatalf("expected session.user.email=demo@example.com, got %#v", user["email"])
-	}
-	if _, exists := session["session_token"]; exists {
-		t.Fatalf("resolver example must not expose raw credentials: %#v", session)
-	}
-}
-
-func TestSSRFetchGuardDefault(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	withTestSSREngine(t, func(engine *gin.Engine) {
-		engine.GET("/guard-demo", func(c *gin.Context) {
-			c.JSON(http.StatusOK, gin.H{"ok": true})
-		})
-	})
-
-	router := gin.New()
-	registerSSRFetchRoutes(router)
-
-	t.Run("missing origin and missing header", func(t *testing.T) {
-		w := performRequest(router, http.MethodGet, DefaultSSRDataRoute+"/guard-demo", func(req *http.Request) {
-			req.Host = "127.0.0.1:8080"
-		})
-		if w.Code != http.StatusForbidden {
-			t.Fatalf("expected 403, got %d body=%s", w.Code, w.Body.String())
-		}
-	})
-
-	t.Run("missing origin but explicit header", func(t *testing.T) {
-		w := performRequest(router, http.MethodGet, DefaultSSRDataRoute+"/guard-demo", func(req *http.Request) {
-			req.Host = "127.0.0.1:8080"
-			req.Header.Set("X-SSR-Fetch", "1")
-		})
-		if w.Code != http.StatusForbidden {
-			t.Fatalf("expected 403, got %d body=%s", w.Code, w.Body.String())
-		}
-	})
-
-	t.Run("same origin without explicit header", func(t *testing.T) {
-		w := performRequest(router, http.MethodGet, DefaultSSRDataRoute+"/guard-demo", func(req *http.Request) {
-			req.Host = "127.0.0.1:8080"
-			req.Header.Set("Origin", "http://127.0.0.1:8080")
-		})
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
-		}
-	})
-
-	t.Run("same host with different scheme is forbidden", func(t *testing.T) {
-		w := performRequest(router, http.MethodGet, DefaultSSRDataRoute+"/guard-demo", func(req *http.Request) {
-			req.Host = "example.com"
-			req.Header.Set("Origin", "https://example.com")
-		})
-		if w.Code != http.StatusForbidden {
-			t.Fatalf("expected 403, got %d body=%s", w.Code, w.Body.String())
-		}
-	})
-
-	t.Run("default https port is equivalent", func(t *testing.T) {
-		w := performRequest(router, http.MethodGet, DefaultSSRDataRoute+"/guard-demo", func(req *http.Request) {
-			req.Host = "example.com:443"
-			req.TLS = &tls.ConnectionState{}
-			req.Header.Set("Origin", "https://example.com")
-		})
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
-		}
-	})
-
-	t.Run("different port is forbidden", func(t *testing.T) {
-		w := performRequest(router, http.MethodGet, DefaultSSRDataRoute+"/guard-demo", func(req *http.Request) {
-			req.Host = "example.com:8080"
-			req.Header.Set("Origin", "http://example.com:8081")
-		})
-		if w.Code != http.StatusForbidden {
-			t.Fatalf("expected 403, got %d body=%s", w.Code, w.Body.String())
-		}
-	})
-
-	t.Run("browser same-origin metadata works without referrer", func(t *testing.T) {
-		w := performRequest(router, http.MethodGet, DefaultSSRDataRoute+"/guard-demo", func(req *http.Request) {
-			req.Host = "127.0.0.1:8080"
-			req.Header.Set("Sec-Fetch-Site", "same-origin")
-		})
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
-		}
-	})
-}
-
-func TestSSRFetchGuardWithHostAuthorizer(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	withTestSSREngine(t, func(engine *gin.Engine) {
-		engine.GET("/guard-demo", func(c *gin.Context) {
-			c.JSON(http.StatusOK, gin.H{"ok": true})
-		})
-	})
-
-	router := gin.New()
-	registerSSRFetchRoutesWithAuthorizer(router, SsrEngine, func(req *http.Request) (int, bool) {
-		if req.Header.Get("Authorization") != "Bearer host-token" {
-			return http.StatusUnauthorized, false
-		}
-		return 0, true
-	})
-
-	t.Run("same origin without host authorization is rejected", func(t *testing.T) {
-		w := performRequest(router, http.MethodGet, DefaultSSRDataRoute+"/guard-demo", func(req *http.Request) {
-			req.Host = "127.0.0.1:8080"
-			req.Header.Set("Origin", "http://127.0.0.1:8080")
-		})
-		if w.Code != http.StatusUnauthorized {
-			t.Fatalf("expected 401, got %d body=%s", w.Code, w.Body.String())
-		}
-	})
-
-	t.Run("wrong host authorization", func(t *testing.T) {
-		w := performRequest(router, http.MethodGet, DefaultSSRDataRoute+"/guard-demo", func(req *http.Request) {
-			req.Header.Set("Authorization", "Bearer wrong-token")
-		})
-		if w.Code != http.StatusUnauthorized {
-			t.Fatalf("expected 401, got %d body=%s", w.Code, w.Body.String())
-		}
-	})
-
-	t.Run("host authorization can allow service requests", func(t *testing.T) {
-		w := performRequest(router, http.MethodGet, DefaultSSRDataRoute+"/guard-demo", func(req *http.Request) {
-			req.Header.Set("Authorization", "Bearer host-token")
-		})
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
-		}
-	})
-}
-
-func TestRegisterSSRFetchRoutesFetcherForwardsCookies(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	withTestSSREngine(t, func(engine *gin.Engine) {
-		engine.GET("/cookie-demo", func(c *gin.Context) {
-			token, _ := c.Cookie("session_token")
-			c.JSON(http.StatusOK, gin.H{
-				"handlerToken": token,
-			})
-		})
-	})
-
-	router := gin.New()
-	fetcher := registerSSRFetchRoutes(router)
-
-	const token = "session-token-xyz"
-	req := httptest.NewRequest(http.MethodGet, "/cookie-demo?from=server", nil)
-	req.Host = "127.0.0.1:8080"
-	addSessionTokenCookie(req, token)
-
-	payload, err := fetcher(context.Background(), req)
-	if err != nil {
-		t.Fatalf("fetcher returned error: %v", err)
-	}
-
-	body := payload.AsMap()
-	if got, ok := body["handlerToken"].(string); !ok || got != token {
-		t.Fatalf("expected handlerToken=%q, got %#v", token, body["handlerToken"])
-	}
-}
-
-func TestWrapSSRMaskHandlerErrorByDefault(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	t.Setenv("SSR_EXPOSE_HANDLER_ERROR", "")
-
-	router := gin.New()
-	router.GET("/boom", WrapSSR(func(*gin.Context) (SSRPayload, error) {
-		return nil, errors.New("db: secret leaked")
-	}))
-
-	w := performRequest(router, http.MethodGet, "/boom", nil)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d body=%s", w.Code, w.Body.String())
-	}
-
-	var body map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode response failed: %v", err)
-	}
-
-	if got, _ := body["error"].(string); got != "internal server error" {
-		t.Fatalf("expected masked error, got %#v", body["error"])
-	}
-}
-
-func TestWrapSSRCanExposeHandlerError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	t.Setenv("SSR_EXPOSE_HANDLER_ERROR", "1")
-	t.Setenv("DEV_MODE", "1")
-
-	router := gin.New()
-	router.GET("/boom", WrapSSR(func(*gin.Context) (SSRPayload, error) {
-		return nil, errors.New("db: secret leaked")
-	}))
-
-	w := performRequest(router, http.MethodGet, "/boom", nil)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d body=%s", w.Code, w.Body.String())
-	}
-
-	var body map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode response failed: %v", err)
-	}
-
-	if got, _ := body["error"].(string); got != "db: secret leaked" {
-		t.Fatalf("expected original error, got %#v", body["error"])
-	}
-}
-
-func TestWrapSSRDoesNotExposeHandlerErrorOutsideDevMode(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	t.Setenv("SSR_EXPOSE_HANDLER_ERROR", "1")
-	t.Setenv("DEV_MODE", "")
-
-	router := gin.New()
-	router.GET("/boom", WrapSSR(func(*gin.Context) (SSRPayload, error) {
-		return nil, errors.New("db: secret leaked")
-	}))
-
-	w := performRequest(router, http.MethodGet, "/boom", nil)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d body=%s", w.Code, w.Body.String())
-	}
-
-	var body map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode response failed: %v", err)
-	}
-
-	if got, _ := body["error"].(string); got != "internal server error" {
-		t.Fatalf("expected masked error in non-dev mode, got %#v", body["error"])
-	}
-}
-
-func TestEnrichPayloadWithoutResolverDoesNotReadSession(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/session-demo", nil)
-	addSessionTokenCookie(req, "credential-must-be-ignored")
-
-	enriched, err := enrichPayloadFromRequest(map[string]any{
-		"foo":     "bar",
-		"session": map[string]any{"user": "forged"},
-	}, req, nil)
-	if err != nil {
-		t.Fatalf("enrich payload failed: %v", err)
-	}
-	if _, exists := enriched["session"]; exists {
-		t.Fatalf("session must be stripped without resolver: %#v", enriched)
-	}
-}
-
-func TestEnrichPayloadResolverIsAuthoritativeForSession(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/session-demo", nil)
-	enriched, err := enrichPayloadFromRequest(map[string]any{
-		"session": map[string]any{"user": "forged"},
-	}, req, func(context.Context, *http.Request) (map[string]any, error) {
-		return map[string]any{"user": "verified"}, nil
-	})
-	if err != nil {
-		t.Fatalf("enrich payload failed: %v", err)
-	}
-	session, ok := enriched["session"].(map[string]any)
-	if !ok || session["user"] != "verified" {
-		t.Fatalf("resolver session must replace payload session: %#v", enriched["session"])
-	}
-}
-
-func TestEnrichPayloadPropagatesSessionResolverError(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/session-demo", nil)
-	wantErr := errors.New("session backend unavailable")
-
-	_, err := enrichPayloadFromRequest(nil, req, func(context.Context, *http.Request) (map[string]any, error) {
-		return nil, wantErr
-	})
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("expected resolver error %v, got %v", wantErr, err)
-	}
-}
-
 func TestIsStaticAssetLikePath(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1063,34 +271,7 @@ func TestIsStaticAssetLikePath(t *testing.T) {
 	}
 }
 
-const testIndexHTML = "<!doctype html><html><head></head><body><!--app-html--></body></html>"
-
-func testFrontendDistFS() fstest.MapFS {
-	return fstest.MapFS{
-		"index.html": {
-			Data: []byte(testIndexHTML),
-		},
-		"assets/app.js": {
-			Data: []byte("console.log('ok')"),
-		},
-		"favicon.ico": {
-			Data: []byte("ico"),
-		},
-	}
-}
-
-func testRouterWithRunBlocking(serverScript string) *gin.Engine {
-	router := gin.New()
-	RunBlocking(router, FrontendBuild{
-		FrontendDist: testFrontendDistFS(),
-		ServerDist: fstest.MapFS{
-			"server.js": {
-				Data: []byte(serverScript),
-			},
-		},
-	}, nil)
-	return router
-}
+const testIndexHTML = `<!doctype html><html><head></head><body><div id="app"><!--app-html--></div></body></html>`
 
 func assertNoCacheHeaders(t *testing.T, header http.Header) {
 	t.Helper()
@@ -1106,14 +287,44 @@ func assertNoCacheHeaders(t *testing.T, header http.Header) {
 	}
 }
 
-func TestRunBlockingCacheHeaders(t *testing.T) {
+func testRouterWithScript(t *testing.T, script string) *gin.Engine {
+	t.Helper()
+	runtime, err := New(Config{
+		Bundle: fstest.MapFS{
+			"dist/client/index.html":    {Data: []byte(testIndexHTML)},
+			"dist/client/assets/app.js": {Data: []byte("console.log('ok')")},
+			"dist/client/favicon.ico":   {Data: []byte("ico")},
+			"dist/server/server.js":     {Data: []byte(script)},
+		},
+		Mode: ModeProduction,
+	})
+	if err != nil {
+		t.Fatalf("create SSR runtime: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := runtime.Close(); err != nil {
+			t.Errorf("close SSR runtime: %v", err)
+		}
+	})
+	router := gin.New()
+	if err := runtime.MountGin(router, GinOptions{
+		Resolver: func(context.Context, PageRequest) (PageResult, error) {
+			return PageResult{Payload: mapPayload{"viewer": nil}}, nil
+		},
+	}); err != nil {
+		t.Fatalf("mount SSR runtime: %v", err)
+	}
+	return router
+}
+
+func TestDocumentCacheHeaders(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("DEV_MODE", "")
 
-	router := testRouterWithRunBlocking(`globalThis.ssrRender = function(url) { return "<div id='app'>SSR:" + url + "</div>" }`)
+	router := testRouterWithScript(t, `globalThis.ssrRender = function(url) { return "<div>SSR:" + url + "</div>" }`)
 
 	t.Run("ssr html uses no-cache headers", func(t *testing.T) {
-		w := performRequest(router, http.MethodGet, "/hello", nil)
+		w := htmlRequest(router, http.MethodGet, "/hello", nil)
 
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected status 200, got %d body=%s", w.Code, w.Body.String())
@@ -1147,157 +358,20 @@ func TestRunBlockingCacheHeaders(t *testing.T) {
 	})
 
 	t.Run("similar data prefix remains an application route", func(t *testing.T) {
-		w := performRequest(router, http.MethodGet, "/_ssr/database", nil)
+		w := htmlRequest(router, http.MethodGet, "/_ssr/database", nil)
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "SSR:/_ssr/database") {
 			t.Fatalf("similar prefix was swallowed by data route: status=%d body=%q", w.Code, w.Body.String())
 		}
 	})
 }
 
-func TestRunBlockingDoesNotRegisterBusinessInviteRoute(t *testing.T) {
+func TestDocumentFallbackKeepsNoCacheHeaders(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("DEV_MODE", "")
 
-	router := gin.New()
-	router.GET("/i/:invite_code", func(c *gin.Context) {
-		c.String(http.StatusOK, "host:"+c.Param("invite_code"))
-	})
-	RunBlocking(router, FrontendBuild{
-		FrontendDist: testFrontendDistFS(),
-		ServerDist: fstest.MapFS{
-			"server.js": {Data: []byte(`globalThis.ssrRender = function() { return "ssr" }`)},
-		},
-	}, nil)
+	router := testRouterWithScript(t, `globalThis.ssrRender = function() { throw new Error("render failed") }`)
 
-	w := performRequest(router, http.MethodGet, "/i/owned-by-host", nil)
-	if w.Code != http.StatusOK || w.Body.String() != "host:owned-by-host" {
-		t.Fatalf("host invite route was not preserved: status=%d body=%q", w.Code, w.Body.String())
-	}
-	if cookies := w.Header().Values("Set-Cookie"); len(cookies) != 0 {
-		t.Fatalf("library unexpectedly wrote invite cookie: %v", cookies)
-	}
-}
-
-func TestRunBlockingUsesInjectedRendererFactory(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	t.Setenv("DEV_MODE", "")
-
-	const serverScript = "external renderer input"
-	var factoryScript string
-	var renderCalls atomic.Int32
-	router := gin.New()
-	RunBlocking(router, FrontendBuild{
-		FrontendDist: testFrontendDistFS(),
-		ServerDist: fstest.MapFS{
-			"server.js": {Data: []byte(serverScript)},
-		},
-		RendererFactory: func(scriptContents string) renderer.Renderer {
-			factoryScript = scriptContents
-			return testRenderer(func(_ context.Context, urlPath string, _ map[string]any) (renderer.Result, error) {
-				renderCalls.Add(1)
-				return renderer.Result{
-					HTML: "<main>external:" + urlPath + "</main>",
-					Head: "<title>external</title>",
-				}, nil
-			})
-		},
-	}, nil)
-
-	if factoryScript != serverScript {
-		t.Fatalf("factory received script %q, want %q", factoryScript, serverScript)
-	}
-	if got := renderCalls.Load(); got != 0 {
-		t.Fatalf("renderer was called implicitly during registration: %d", got)
-	}
-
-	w := performRequest(router, http.MethodGet, "/injected?title=hello%20world&tag=a%2Fb", nil)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d body=%s", w.Code, w.Body.String())
-	}
-	if body := w.Body.String(); !strings.Contains(body, "external:/injected?title=hello%20world&tag=a%2Fb") || !strings.Contains(body, "<title>external</title>") {
-		t.Fatalf("expected injected renderer output, got %s", body)
-	}
-	if got := renderCalls.Load(); got != 1 {
-		t.Fatalf("renderer call count=%d, want 1", got)
-	}
-}
-
-func TestRunBlockingInjectsResolvedSession(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	t.Setenv("DEV_MODE", "")
-
-	router := gin.New()
-	RunBlocking(router, FrontendBuild{
-		FrontendDist: testFrontendDistFS(),
-		ServerDist: fstest.MapFS{
-			"server.js": {Data: []byte("external renderer input")},
-		},
-		RendererFactory: func(string) renderer.Renderer {
-			return testRenderer(func(_ context.Context, _ string, payload map[string]any) (renderer.Result, error) {
-				session, _ := payload["session"].(map[string]any)
-				user, _ := session["user"].(map[string]any)
-				email, _ := user["email"].(string)
-				return renderer.Result{HTML: "<main>" + email + "</main>"}, nil
-			})
-		},
-		SessionResolver: func(_ context.Context, req *http.Request) (map[string]any, error) {
-			cookie, err := req.Cookie("app_session")
-			if err != nil || cookie.Value != "verified-opaque-token" {
-				return nil, nil
-			}
-			return map[string]any{
-				"user": map[string]any{"email": "safe@example.com"},
-			}, nil
-		},
-	}, nil)
-
-	w := performRequest(router, http.MethodGet, "/private", func(req *http.Request) {
-		req.AddCookie(&http.Cookie{Name: "app_session", Value: "verified-opaque-token"})
-	})
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d body=%s", w.Code, w.Body.String())
-	}
-	if body := w.Body.String(); !strings.Contains(body, "safe@example.com") || strings.Contains(body, "verified-opaque-token") {
-		t.Fatalf("expected safe resolved session without raw credential, got %s", body)
-	}
-}
-
-func TestRunBlockingRejectsSessionResolverError(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	t.Setenv("DEV_MODE", "")
-
-	router := gin.New()
-	RunBlocking(router, FrontendBuild{
-		FrontendDist: testFrontendDistFS(),
-		ServerDist: fstest.MapFS{
-			"server.js": {Data: []byte("external renderer input")},
-		},
-		RendererFactory: func(string) renderer.Renderer {
-			return testRenderer(func(context.Context, string, map[string]any) (renderer.Result, error) {
-				return renderer.Result{HTML: "<main>must not render</main>"}, nil
-			})
-		},
-		SessionResolver: func(context.Context, *http.Request) (map[string]any, error) {
-			return nil, errors.New("invalid session signature")
-		},
-	}, nil)
-
-	w := performRequest(router, http.MethodGet, "/private", nil)
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("expected status 500, got %d body=%s", w.Code, w.Body.String())
-	}
-	if strings.Contains(w.Body.String(), "must not render") {
-		t.Fatalf("renderer must not run after resolver error, got %s", w.Body.String())
-	}
-}
-
-func TestRunBlockingFallbackKeepsNoCacheHeaders(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	t.Setenv("DEV_MODE", "")
-
-	router := testRouterWithRunBlocking(`globalThis.ssrRender = function() { throw new Error("render failed") }`)
-
-	w := performRequest(router, http.MethodGet, "/fallback", nil)
+	w := htmlRequest(router, http.MethodGet, "/fallback", nil)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d body=%s", w.Code, w.Body.String())
@@ -1305,35 +379,6 @@ func TestRunBlockingFallbackKeepsNoCacheHeaders(t *testing.T) {
 	assertNoCacheHeaders(t, w.Header())
 	if !strings.Contains(w.Body.String(), `name="ssr-error-id"`) {
 		t.Fatalf("expected fallback page to include ssr-error-id meta, got %s", w.Body.String())
-	}
-}
-
-func TestRunBlockingFallsBackWhenPayloadCannotBeInjected(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	t.Setenv("DEV_MODE", "")
-
-	router := gin.New()
-	RunBlocking(router, FrontendBuild{
-		FrontendDist: testFrontendDistFS(),
-		ServerDist: fstest.MapFS{
-			"server.js": {Data: []byte("external renderer input")},
-		},
-		RendererFactory: func(string) renderer.Renderer {
-			return testRenderer(func(context.Context, string, map[string]any) (renderer.Result, error) {
-				return renderer.Result{HTML: "<main>must-not-be-served</main>"}, nil
-			})
-		},
-	}, func(context.Context, *http.Request) (SSRPayload, error) {
-		return mapPayload{"invalid": make(chan int)}, nil
-	})
-
-	w := performRequest(router, http.MethodGet, "/invalid-payload", nil)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected fallback status 200, got %d", w.Code)
-	}
-	assertNoCacheHeaders(t, w.Header())
-	if strings.Contains(w.Body.String(), "must-not-be-served") || !strings.Contains(w.Body.String(), `name="ssr-error-id"`) {
-		t.Fatalf("expected empty fallback with error id, got %q", w.Body.String())
 	}
 }
 

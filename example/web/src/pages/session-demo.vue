@@ -14,31 +14,13 @@ import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { useLocaleText } from '~/composables/useLocaleText'
-import { useSsrData } from '~/composables/useSsrData'
+import { usePage, useSession } from '~/composables/usePageDocument'
 
-interface SessionUser {
-  id?: string
-  name?: string
-  email?: string
-  provider?: string
-}
-
-interface SessionPayload {
-  user?: SessionUser
-}
-
-interface ExamplePayload {
-  message?: string
-  path?: string
-  query?: string
-  generatedAt?: string
-  session?: SessionPayload
-}
-
-const payload = useSsrData<ExamplePayload>()
+const page = usePage()
+const session = useSession()
 const route = useRoute()
 const { t } = useLocaleText()
-const user = computed(() => payload.value.session?.user)
+const user = computed(() => session.value?.user)
 const isLoggedIn = computed(() => !!user.value?.email)
 const nextPath = computed(() => {
   const next = route.query.next
@@ -51,8 +33,8 @@ const nextPath = computed(() => {
 <template>
   <section class="card">
     <h2>{{ t('page.session.title') }}</h2>
-    <p><strong>{{ t('common.field.message') }}:</strong> {{ payload.message ?? t('common.empty') }}</p>
-    <p><strong>{{ t('common.field.path') }}:</strong> {{ payload.path ?? '-' }}</p>
+    <p><strong>{{ t('common.field.message') }}:</strong> {{ page?.message || t('common.empty') }}</p>
+    <p><strong>{{ t('common.field.path') }}:</strong> {{ route.path }}</p>
     <p v-if="nextPath !== route.path"><strong>{{ t('common.field.next') }}:</strong> {{ nextPath }}</p>
 
     <p v-if="isLoggedIn"><strong>{{ t('common.field.status') }}:</strong> {{ t('page.session.loggedIn') }}</p>

@@ -1,10 +1,10 @@
 # Repository Guidelines
 
 ## 项目结构与模块组织
-- `server.go`：基于 gin 的入口，处理 SSR 渲染、回退页面、dev 代理与 `SSR_RENDER_LIMIT` 并发控制。
+- `runtime.go`：`Runtime` 生命周期（`New`/`MountGin`/`Close`）；`server.go`：SSR 渲染、回退页面与静态资源。
 - `renderer/`：`renderer.go` 定义渲染接口与工厂；`engine/gojs` 提供内置 goja 渲染器，其他引擎由外部实现并注入。
-- `payload.go` 暴露 `SSRPayload` 数据接口；`DataEngine`、`SessionResolver` 由宿主按 SSR 实例注入，库内不提供默认认证逻辑；`locales/` 管理语言列表与默认语言。
-- 前端构建通过 `FrontendBuild` 注入，期望 `index.html`、`assets/`、`server.js`（默认入口名）可从打包产物挂载。
+- `payload.go` 暴露 `SSRPayload`/`ObjectPayload`；页面数据完全由宿主的 `PageResolver` 产出，库内不提供默认认证逻辑；`locales/` 管理语言列表与默认语言。
+- 前端构建通过 `Config.Bundle` 注入，期望 `dist/client/index.html`、`dist/client/assets/`、`dist/server/server.js` 可从打包产物挂载。
 
 ## 构建、测试与本地开发命令
 - 依赖 Go 1.25+；内置渲染器仅依赖 goja。
@@ -38,7 +38,6 @@ npm --prefix example/web test
 - PR 需描述变更、影响范围与验证方式；涉及 SSR 路径或并发限制变更，请附本地验证命令输出/截图；如有 issue，请显式关联。
 
 ## 配置与安全提示
-- 环境变量：`SSR_RENDER_LIMIT` 控制并发，`GOJA_POOL_SIZE` / `GOJA_POOL_TIMEOUT` / `GOJA_RUNTIME_MAX_RENDERS` 控制 gojs 池与 runtime 回收，`DEV_MODE`/`DEV_SERVER_URL` 控制代理。
-- 不要提交真实 cookie/token 或前端产物；前端资源应经构建后挂载到 `FrontendBuild`，确保 `assets/` 子路径可被静态服务。
-- `SessionResolver` 必须由宿主完成身份校验，返回值不得包含原始 token、密钥等凭证。
-- `session` 是 resolver 独占字段；普通 payload 不得依赖同名字段。生产环境优先配置固定 `Options.SiteOrigin`。
+- 并发用 `Config.MaxConcurrentPages`/`Config.PageTimeout` 控制；`GOJA_POOL_SIZE` / `GOJA_POOL_TIMEOUT` / `GOJA_RUNTIME_MAX_RENDERS` 控制 gojs 池与 runtime 回收，`DEV_MODE`/`DEV_SERVER_URL` 控制代理。
+- 不要提交真实 cookie/token 或前端产物；前端资源应经构建后挂载到 `Config.Bundle`，确保 `assets/` 子路径可被静态服务。
+- 身份校验由宿主完成（middleware 或 `PageResolver`），写入快照的数据不得包含原始 token、密钥等凭证。生产环境优先配置固定 `Config.SiteOrigin`。

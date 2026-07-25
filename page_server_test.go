@@ -25,27 +25,46 @@ func typedTestDist() fstest.MapFS {
 	}
 }
 
+type typedTestOptions struct {
+	SiteOrigin           string
+	ExcludedPathPrefixes []string
+}
+
 func mountTypedTestSSR(
 	t *testing.T,
 	router *gin.Engine,
 	resolver PageResolver,
 	rendererFn testRenderer,
-	mutate func(*Options),
+	mutate func(*typedTestOptions),
 ) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	t.Setenv("DEV_MODE", "")
 
-	options := Options{
-		PageResolver: resolver,
-		RendererFactory: func(string) renderer.Renderer {
-			return rendererFn
-		},
-	}
+	options := typedTestOptions{}
 	if mutate != nil {
 		mutate(&options)
 	}
-	if err := SsrWithOptions(router, typedTestDist(), options); err != nil {
+	runtime, err := New(Config{
+		Bundle:     typedTestDist(),
+		Mode:       ModeProduction,
+		SiteOrigin: options.SiteOrigin,
+		RendererFactory: func(string) renderer.Renderer {
+			return rendererFn
+		},
+	})
+	if err != nil {
+		t.Fatalf("create typed SSR runtime: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := runtime.Close(); err != nil {
+			t.Errorf("close typed SSR runtime: %v", err)
+		}
+	})
+	if err := runtime.MountGin(router, GinOptions{
+		Resolver:             resolver,
+		ExcludedPathPrefixes: options.ExcludedPathPrefixes,
+	}); err != nil {
 		t.Fatalf("mount typed SSR: %v", err)
 	}
 }
@@ -115,7 +134,7 @@ func TestPageResolverIsSharedByDocumentAndNavigation(t *testing.T) {
 		testRenderer(func(_ context.Context, urlPath string, payload map[string]any) (renderer.Result, error) {
 			return renderer.Result{HTML: "<main>" + urlPath + ":" + payload["url"].(string) + "</main>"}, nil
 		}),
-		func(options *Options) {
+		func(options *typedTestOptions) {
 			options.SiteOrigin = "https://canonical.example"
 		},
 	)
@@ -172,7 +191,7 @@ func TestTypedDocumentFallbackOnlyHandlesHTMLDocuments(t *testing.T) {
 		testRenderer(func(context.Context, string, map[string]any) (renderer.Result, error) {
 			return renderer.Result{HTML: "<main>ok</main>"}, nil
 		}),
-		func(options *Options) {
+		func(options *typedTestOptions) {
 			options.ExcludedPathPrefixes = []string{"/api", "/backend", "/admin"}
 		},
 	)
@@ -487,48 +506,6 @@ func TestTypedResolverRejectsUnsafeOutcomes(t *testing.T) {
 			response := htmlRequest(router, http.MethodGet, "/", nil)
 			if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), "must not render") {
 				t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
-			}
-		})
-	}
-}
-
-func TestPageResolverRejectsLegacyDataAndSessionBoundaries(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	t.Setenv("DEV_MODE", "")
-	resolver := PageResolver(func(context.Context, PageRequest) (PageResult, error) {
-		return PageResult{}, nil
-	})
-
-	tests := []struct {
-		name    string
-		options Options
-		want    string
-	}{
-		{
-			name: "data engine",
-			options: Options{
-				PageResolver: resolver,
-				DataEngine:   NewDataEngine(),
-			},
-			want: "PageResolver and DataEngine",
-		},
-		{
-			name: "session resolver",
-			options: Options{
-				PageResolver: resolver,
-				SessionResolver: func(context.Context, *http.Request) (map[string]any, error) {
-					return nil, nil
-				},
-			},
-			want: "PageResolver and SessionResolver",
-		},
-	}
-
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			err := SsrWithOptions(gin.New(), typedTestDist(), testCase.options)
-			if err == nil || !strings.Contains(err.Error(), testCase.want) {
-				t.Fatalf("error=%v, want %q", err, testCase.want)
 			}
 		})
 	}

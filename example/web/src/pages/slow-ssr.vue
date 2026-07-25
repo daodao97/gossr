@@ -14,16 +14,9 @@ import { onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { useLocaleText } from '~/composables/useLocaleText'
-import { useSsrData } from '~/composables/useSsrData'
+import { usePage } from '~/composables/usePageDocument'
 
-interface ExamplePayload {
-  message?: string
-  path?: string
-  query?: string
-  generatedAt?: string
-}
-
-const payload = useSsrData<ExamplePayload>()
+const page = usePage()
 const route = useRoute()
 const ssrErrorID = ref('-')
 const { t } = useLocaleText()
@@ -41,9 +34,9 @@ onMounted(() => {
     <p>{{ t('page.slow.desc1') }}</p>
     <p>{{ t('page.slow.desc2') }}</p>
     <p><strong>{{ t('common.field.ssrErrorId') }}:</strong> {{ ssrErrorID }}</p>
-    <p><strong>{{ t('common.field.message') }}:</strong> {{ payload.message ?? t('common.empty') }}</p>
-    <p><strong>{{ t('common.field.path') }}:</strong> {{ payload.path ?? '-' }}</p>
-    <p><strong>{{ t('common.field.generatedAt') }}:</strong> {{ payload.generatedAt ?? '-' }}</p>
+    <p><strong>{{ t('common.field.message') }}:</strong> {{ page?.message || t('common.empty') }}</p>
+    <p><strong>{{ t('common.field.path') }}:</strong> {{ route.path }}</p>
+    <p><strong>{{ t('common.field.generatedAt') }}:</strong> {{ page?.generated_at ?? '-' }}</p>
 
     <a class="link" :href="route.path" target="_blank" rel="noopener noreferrer">{{ t('page.slow.openCurrent', { path: route.path }) }}</a>
   </section>

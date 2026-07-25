@@ -1,9 +1,12 @@
-<route lang="yaml">
-meta:
-  ssrData: false
-  nav:
-    label: About
-    order: 20
+<route lang="json">
+{
+  "meta": {
+    "nav": {
+      "label": "About",
+      "order": 20
+    }
+  }
+}
 </route>
 
 <template>
@@ -12,6 +15,6 @@ meta:
       <title>About · gossr</title>
     </Teleport>
     <h1>About</h1>
-    <p>This route is discovered automatically and opts out of SSR data fetching.</p>
+    <p>This route is discovered automatically from src/pages.</p>
   </main>
 </template>

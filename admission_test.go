@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"sync/atomic"
 	"testing"
-	"testing/fstest"
 	"time"
 
 	"github.com/daodao97/gossr/renderer"
@@ -36,7 +35,6 @@ func TestDocumentAndNavigationShareEndToEndAdmission(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("DEV_MODE", "")
 
-	admission := newPageAdmission(1, 40*time.Millisecond)
 	var resolverCalls atomic.Int32
 	renderEntered := make(chan struct{})
 	releaseRender := make(chan struct{})
@@ -51,33 +49,31 @@ func TestDocumentAndNavigationShareEndToEndAdmission(t *testing.T) {
 		return PageResult{Payload: mapPayload{"url": targetRequestURI(request)}}, nil
 	})
 
-	router := gin.New()
-	err := runBlocking(
-		router,
-		FrontendBuild{
-			FrontendDist: fstest.MapFS{
-				"index.html":    {Data: []byte(testIndexHTML)},
-				"assets/app.js": {Data: []byte("app")},
-			},
-			ServerDist: fstest.MapFS{
-				"server.js": {Data: []byte("external renderer input")},
-			},
-			PageResolver:  resolver,
-			pageAdmission: admission,
-			RendererFactory: func(string) renderer.Renderer {
-				return testRenderer(func(_ context.Context, _ string, _ map[string]any) (renderer.Result, error) {
-					close(renderEntered)
-					<-releaseRender
-					return renderer.Result{HTML: "<main>done</main>"}, nil
-				})
-			},
+	runtime, err := New(Config{
+		Bundle:             typedTestDist(),
+		Mode:               ModeProduction,
+		MaxConcurrentPages: 1,
+		PageTimeout:        40 * time.Millisecond,
+		RendererFactory: func(string) renderer.Renderer {
+			return testRenderer(func(_ context.Context, _ string, _ map[string]any) (renderer.Result, error) {
+				close(renderEntered)
+				<-releaseRender
+				return renderer.Result{HTML: "<main>done</main>"}, nil
+			})
 		},
-		nil,
-	)
+	})
 	if err != nil {
-		t.Fatalf("run typed SSR: %v", err)
+		t.Fatalf("create typed SSR runtime: %v", err)
 	}
-	mountPageResolverRoutes(router, resolver, nil, "", admission)
+	t.Cleanup(func() {
+		if err := runtime.Close(); err != nil {
+			t.Errorf("close typed SSR runtime: %v", err)
+		}
+	})
+	router := gin.New()
+	if err := runtime.MountGin(router, GinOptions{Resolver: resolver}); err != nil {
+		t.Fatalf("mount typed SSR: %v", err)
+	}
 
 	documentDone := make(chan struct{})
 	go func() {
@@ -110,7 +106,6 @@ func TestNavigationResolverUsesEndToEndDeadline(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("DEV_MODE", "")
 
-	admission := newPageAdmission(1, 20*time.Millisecond)
 	resolver := PageResolver(func(ctx context.Context, request PageRequest) (PageResult, error) {
 		if _, ok := request.Source.Context().Deadline(); !ok {
 			return PageResult{}, errors.New("source request has no deadline")
@@ -118,11 +113,30 @@ func TestNavigationResolverUsesEndToEndDeadline(t *testing.T) {
 		<-ctx.Done()
 		return PageResult{}, ctx.Err()
 	})
-	handler := pageResolverNavigationHandler(resolver, "", admission)
+	runtime, err := New(Config{
+		Bundle:      typedTestDist(),
+		Mode:        ModeProduction,
+		PageTimeout: 20 * time.Millisecond,
+		RendererFactory: func(string) renderer.Renderer {
+			return testRenderer(func(context.Context, string, map[string]any) (renderer.Result, error) {
+				return renderer.Result{HTML: "must not render"}, nil
+			})
+		},
+	})
+	if err != nil {
+		t.Fatalf("create typed SSR runtime: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := runtime.Close(); err != nil {
+			t.Errorf("close typed SSR runtime: %v", err)
+		}
+	})
 	router := gin.New()
-	router.GET(DefaultSSRDataRoute+"/*path", handler)
+	if err := runtime.MountGin(router, GinOptions{Resolver: resolver}); err != nil {
+		t.Fatalf("mount typed SSR: %v", err)
+	}
 
-	response := performRequest(router, http.MethodGet, DefaultSSRDataRoute+"/slow", nil)
+	response := navigationRequest(router, "/slow", nil)
 	if response.Code != http.StatusGatewayTimeout {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}

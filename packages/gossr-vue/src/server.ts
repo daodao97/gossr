@@ -32,9 +32,13 @@ export function createSSRRenderer<Document>(
 
     try {
       await navigateServerRuntime(runtime, target, parsed.url)
+      // Vue renders `<Teleport to="head">` into ssrContext.teleports.head;
+      // gossr injects that string into the document <head>.
+      const ssrContext: { teleports?: Record<string, string> } = {}
+      const html = await renderToString(runtime.app, ssrContext)
       result = {
-        html: await renderToString(runtime.app),
-        head: '',
+        html,
+        head: typeof ssrContext.teleports?.head === 'string' ? ssrContext.teleports.head : '',
       }
     }
     catch (error) {

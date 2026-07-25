@@ -19,113 +19,140 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type greetingPayload struct {
-	Message     string
-	Locale      string
-	Path        string
-	Query       string
-	GeneratedAt string
+const pageSchemaVersion = 1
+
+// pageDocument 是 Go 与 Vue 共享的页面快照。首屏渲染和浏览器内导航
+// 都由同一个 resolvePage 产出同一份文档。
+type pageDocument struct {
+	SchemaVersion int            `json:"schema_version"`
+	URL           string         `json:"url"`
+	Locale        string         `json:"locale"`
+	Session       map[string]any `json:"session"`
+	Page          pageData       `json:"page"`
 }
 
-func (p greetingPayload) AsMap() map[string]any {
-	return map[string]any{
-		"message":     p.Message,
-		"locale":      p.Locale,
-		"path":        p.Path,
-		"query":       p.Query,
-		"generatedAt": p.GeneratedAt,
-	}
+type pageData struct {
+	Kind        string `json:"kind"`
+	Message     string `json:"message"`
+	GeneratedAt string `json:"generated_at"`
 }
 
-var demoLocales = append([]string(nil), locales.Supported...)
+var routeKinds = map[string]string{
+	"/":             "home",
+	"/hi/gopher":    "hi",
+	"/hi/vue":       "hi",
+	"/seo-demo":     "seo",
+	"/session-demo": "session",
+	"/protected":    "protected",
+	"/slow-ssr":     "slow_ssr",
+	"/slow-fetch":   "slow_fetch",
+}
+
+var messageKeyByKind = map[string]string{
+	"home":       "payload.home.message",
+	"seo":        "payload.seo.message",
+	"session":    "payload.session.message",
+	"slow_ssr":   "payload.slowSsr.message",
+	"slow_fetch": "payload.slowFetch.message",
+}
+
 var localeMessages = mustLoadLocaleMessages()
-var ssrDataEngine = gossr.NewDataEngine()
 
-func init() {
-	registerLocalizedSSRRoute(ssrDataEngine, "/", homePayload)
-	registerLocalizedSSRRoute(ssrDataEngine, "/hi/:name", hiPayload)
-	registerLocalizedSSRRoute(ssrDataEngine, "/seo-demo", seoDemoPayload)
-	registerLocalizedSSRRoute(ssrDataEngine, "/session-demo", sessionDemoPayload)
-	registerLocalizedSSRRoute(ssrDataEngine, "/slow-ssr", slowSSRPayload)
-	registerLocalizedSSRRoute(ssrDataEngine, "/slow-fetch", slowFetchPayload)
-}
+// resolvePage 是应用唯一的页面边界:文档请求和 /_ssr/data 导航请求
+// 共用它,gossr 负责渲染、序列化、缓存头和 cookie 写回。
+func resolvePage(ctx context.Context, request gossr.PageRequest) (gossr.PageResult, error) {
+	locale := localeFromRequestPath(request.URL.Path)
+	routePath := stripLocalePrefix(request.URL.Path)
+	kind, found := routeKinds[routePath]
 
-func homePayload(c *gin.Context) (gossr.SSRPayload, error) {
-	locale := localeFromRequestPath(c.Request.URL.Path)
-	message := localizedText(locale, "payload.home.message")
-	return buildPayload(c, message), nil
-}
-
-func hiPayload(c *gin.Context) (gossr.SSRPayload, error) {
-	locale := localeFromRequestPath(c.Request.URL.Path)
-	name := strings.TrimSpace(c.Param("name"))
-	if name == "" {
-		name = localizedText(locale, "payload.hi.friend")
+	session, err := resolveDemoSession(ctx, request.Source)
+	if err != nil {
+		return gossr.PageResult{}, err
 	}
 
-	title := strings.TrimSpace(c.Query("title"))
-	if title != "" {
-		name = fmt.Sprintf("%s %s", title, name)
+	if kind == "protected" && session == nil {
+		target := request.URL.RequestURI()
+		location := localizedRoutePathFor(locale, "/session-demo") +
+			"?next=" + url.QueryEscape(target)
+		return gossr.PageResult{
+			Redirect: &gossr.Redirect{Status: http.StatusFound, Location: location},
+		}, nil
 	}
 
-	message := fmt.Sprintf(localizedText(locale, "payload.hi.template"), name)
-	return buildPayload(c, message), nil
-}
-
-func seoDemoPayload(c *gin.Context) (gossr.SSRPayload, error) {
-	locale := localeFromRequestPath(c.Request.URL.Path)
-	message := localizedText(locale, "payload.seo.message")
-	return buildPayload(c, message), nil
-}
-
-func sessionDemoPayload(c *gin.Context) (gossr.SSRPayload, error) {
-	locale := localeFromRequestPath(c.Request.URL.Path)
-	message := localizedText(locale, "payload.session.message")
-	return buildPayload(c, message), nil
-}
-
-func slowSSRPayload(c *gin.Context) (gossr.SSRPayload, error) {
-	locale := localeFromRequestPath(c.Request.URL.Path)
-	message := localizedText(locale, "payload.slowSsr.message")
-	return buildPayload(c, message), nil
-}
-
-func slowFetchPayload(c *gin.Context) (gossr.SSRPayload, error) {
-	// 模拟 _ssr/data 慢查询：只延迟数据阶段，不影响 SSR 渲染阶段逻辑。
-	select {
-	case <-time.After(3500 * time.Millisecond):
-	case <-c.Request.Context().Done():
-		return nil, c.Request.Context().Err()
+	if kind == "slow_fetch" {
+		// 演示慢数据源:只延迟数据阶段,页面通过框架的 loading 状态反馈。
+		select {
+		case <-time.After(3500 * time.Millisecond):
+		case <-ctx.Done():
+			return gossr.PageResult{}, ctx.Err()
+		}
 	}
 
-	locale := localeFromRequestPath(c.Request.URL.Path)
-	message := localizedText(locale, "payload.slowFetch.message")
-	return buildPayload(c, message), nil
-}
-
-func buildPayload(c *gin.Context, message string) greetingPayload {
-	locale := localeFromRequestPath(c.Request.URL.Path)
-	return greetingPayload{
-		Message:     message,
-		Locale:      locale,
-		Path:        c.Request.URL.Path,
-		Query:       c.Request.URL.RawQuery,
-		GeneratedAt: time.Now().Format(time.RFC3339),
+	document := pageDocument{
+		SchemaVersion: pageSchemaVersion,
+		URL:           request.URL.RequestURI(),
+		Locale:        locale,
+		Session:       session,
+		Page: pageData{
+			Kind:        kind,
+			Message:     pageMessage(kind, locale, routePath, request.URL.Query()),
+			GeneratedAt: time.Now().Format(time.RFC3339),
+		},
 	}
-}
-
-func registerLocalizedSSRRoute(engine *gin.Engine, basePath string, handler func(*gin.Context) (gossr.SSRPayload, error)) {
-	engine.GET(basePath, gossr.WrapSSR(handler))
-	for _, locale := range demoLocales {
-		engine.GET(localizedRoutePath(locale, basePath), gossr.WrapSSR(handler))
+	status := http.StatusOK
+	if !found {
+		document.Page.Kind = "not_found"
+		status = http.StatusNotFound
 	}
+
+	payload, err := gossr.ObjectPayload(document)
+	if err != nil {
+		return gossr.PageResult{}, err
+	}
+	return gossr.PageResult{Payload: payload, Status: status}, nil
 }
 
-func localizedRoutePath(locale string, basePath string) string {
+func pageMessage(kind string, locale string, routePath string, query url.Values) string {
+	if kind == "hi" {
+		name := strings.TrimPrefix(routePath, "/hi/")
+		if name == "" {
+			name = localizedText(locale, "payload.hi.friend")
+		}
+		if title := strings.TrimSpace(query.Get("title")); title != "" {
+			name = fmt.Sprintf("%s %s", title, name)
+		}
+		return fmt.Sprintf(localizedText(locale, "payload.hi.template"), name)
+	}
+	key, ok := messageKeyByKind[kind]
+	if !ok {
+		return ""
+	}
+	return localizedText(locale, key)
+}
+
+func localizedRoutePathFor(locale string, basePath string) string {
+	if locale == locales.Default {
+		return basePath
+	}
 	if basePath == "/" {
 		return "/" + locale
 	}
 	return "/" + locale + basePath
+}
+
+func stripLocalePrefix(rawPath string) string {
+	trimmed := strings.Trim(rawPath, "/")
+	if trimmed == "" {
+		return "/"
+	}
+	segments := strings.SplitN(trimmed, "/", 2)
+	if !locales.IsSupported(segments[0]) {
+		return "/" + trimmed
+	}
+	if len(segments) == 1 {
+		return "/"
+	}
+	return "/" + segments[1]
 }
 
 func localeFromRequestPath(rawPath string) string {
@@ -134,12 +161,7 @@ func localeFromRequestPath(rawPath string) string {
 		return locales.Default
 	}
 
-	segments := strings.Split(trimmed, "/")
-	if len(segments) == 0 {
-		return locales.Default
-	}
-
-	candidate := strings.TrimSpace(segments[0])
+	candidate := strings.TrimSpace(strings.Split(trimmed, "/")[0])
 	if locales.IsSupported(candidate) {
 		return locales.Normalize(candidate)
 	}
@@ -170,16 +192,29 @@ func main() {
 	router.Use(gin.Recovery())
 	registerSessionDemoRoutes(router)
 
-	if err := gossr.SsrWithOptions(router, web.Dist, gossr.Options{
-		SessionResolver: resolveDemoSession,
-		DataEngine:      ssrDataEngine,
+	runtime, err := gossr.New(gossr.Config{
+		Bundle: web.Dist,
+		// slow-fetch 演示会在 resolver 里等待 3.5s,放宽端到端预算。
+		PageTimeout: 10 * time.Second,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := runtime.MountGin(router, gossr.GinOptions{
+		Resolver:             resolvePage,
+		ExcludedPathPrefixes: []string{"/demo"},
 	}); err != nil {
+		_ = runtime.Close()
 		log.Fatal(err)
 	}
 
 	addr := ":8080"
 	log.Printf("gossr example is running at http://127.0.0.1%s", addr)
-	if err := router.Run(addr); err != nil {
+	err = router.Run(addr)
+	if closeErr := runtime.Close(); closeErr != nil {
+		log.Printf("close SSR runtime failed: %v", closeErr)
+	}
+	if err != nil {
 		log.Fatal(err)
 	}
 }
@@ -277,6 +312,9 @@ func (s *demoSessionStore) expired(session demoSession, now time.Time) bool {
 var demoSessions = newDemoSessionStore(demoSessionMaxItems, demoSessionTTL)
 
 func resolveDemoSession(_ context.Context, req *http.Request) (map[string]any, error) {
+	if req == nil {
+		return nil, nil
+	}
 	cookie, err := req.Cookie("session_token")
 	if err != nil || cookie.Value == "" {
 		return nil, nil
