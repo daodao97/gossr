@@ -41,13 +41,13 @@ interface NavigationOptions<Document> {
 
 export interface ManagedNavigationCoordinator<Document> {
   current: Readonly<Ref<Document | undefined>>
-  currentURL: Readonly<Ref<string | undefined>>
   loading: Readonly<Ref<boolean>>
   error: Readonly<Ref<Error | null>>
   prepare: (url: string, options?: { force?: boolean }) => Promise<NavigationPreparation>
   commit: (url: string) => boolean
   refresh: (url: string) => Promise<NavigationPreparation>
   cancelRoute: () => void
+  documentFor: (url: string) => Document | undefined
   dispose: () => void
 }
 
@@ -243,6 +243,25 @@ export function createNavigationCoordinator<Document>(
     loading.value = false
   }
 
+  function documentFor(rawURL: string) {
+    const url = canonicalNavigationURL(rawURL)
+    const candidate = staged.value
+    if (
+      candidate?.id === sequence
+      && navigationURLsMatch(candidate.targetURL, url)
+    ) {
+      return candidate.document
+    }
+    if (
+      current.value !== undefined
+      && currentURL.value !== undefined
+      && navigationURLsMatch(currentURL.value, url)
+    ) {
+      return current.value
+    }
+    return undefined
+  }
+
   function dispose() {
     if (disposed)
       return
@@ -257,13 +276,13 @@ export function createNavigationCoordinator<Document>(
 
   return {
     current,
-    currentURL,
     loading,
     error,
     prepare,
     commit,
     refresh,
     cancelRoute,
+    documentFor,
     dispose,
   }
 }
