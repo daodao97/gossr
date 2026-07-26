@@ -362,7 +362,10 @@ ginOptions.SSRFetchAuthorizer = func(req *http.Request) (int, bool) {
 
 - `DEV_MODE`：`1/true/yes/on/dev` 视为开发模式
 - `DEV_SERVER_URL`：dev 代理地址，默认 `http://127.0.0.1:3333`
-- `TRUST_FORWARDED_HEADERS`：`1/true/yes/on` 时信任 `X-Forwarded-Host/Proto/Port`（默认关闭）
+- `TRUST_FORWARDED_HEADERS`：`1/true/yes/on` 时信任 `X-Forwarded-Host/Proto/Port`（默认关闭）。
+  只能在"可信反代已覆写这些头"的部署中开启：若客户端可直连服务或反代原样透传，
+  伪造的 Host/Proto 会进入 `requestOrigin` 兜底与 `/_ssr/data` 同源判断。
+  显式配置 `Config.SiteOrigin` 的宿主不受此影响，推荐始终显式配置。
 - `GOJA_POOL_SIZE` / `GOJA_POOL_TIMEOUT`：goja 池大小与获取超时（默认超时 `5s`）
   - `GOJA_POOL_SIZE` 会限制在 `[1, 512]`，默认等于 `GOMAXPROCS`
   - `GOJA_POOL_TIMEOUT` 负值会按 `0` 处理，最大 `30s`

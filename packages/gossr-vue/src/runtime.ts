@@ -120,6 +120,7 @@ export function createApplicationRuntime<Document>(
         state: clientNavigation,
         frameworkDisposers,
       })
+      installRestoredPageRevalidation(navigation, frameworkDisposers)
     }
 
     let setupResult: unknown
@@ -533,6 +534,26 @@ function installClientNavigationLoader<Document>(options: {
 
 function releasePendingRoute(state: ClientNavigationState) {
   state.pendingRoutes = Math.max(0, state.pendingRoutes - 1)
+}
+
+// bfcache 恢复的页面是内存快照,可能跨越了登出/换号(部分浏览器对
+// no-store 页面仍启用 bfcache)。恢复时重验证当前文档:会话已变化时
+// refresh 沿用服务端裁决——重定向走路由替换,失败退回整页导航。
+function installRestoredPageRevalidation<Document>(
+  navigation: NavigationCoordinator<Document>,
+  frameworkDisposers: Array<() => void>,
+) {
+  if (typeof window === 'undefined')
+    return
+
+  const revalidate = (event: PageTransitionEvent) => {
+    if (event.persisted)
+      void navigation.refresh()
+  }
+  window.addEventListener('pageshow', revalidate)
+  frameworkDisposers.push(() => {
+    window.removeEventListener('pageshow', revalidate)
+  })
 }
 
 function safeDocumentURL(fullPath: string) {

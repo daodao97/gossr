@@ -703,3 +703,69 @@ function routeMatchingDefinition() {
     },
   })
 }
+
+describe('bfcache restore revalidation', () => {
+  beforeEach(() => {
+    window.history.replaceState({}, '', '/')
+    document.body.innerHTML = '<div id="app"></div>'
+  })
+
+  it('refreshes the current document when a persisted page is restored', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      Response.json({
+        kind: 'render',
+        status: 200,
+        snapshot: { url: '/' },
+      }),
+    )
+    const runtime = createApplicationRuntime(testDefinition(), {
+      platform: 'client',
+      initial: {
+        document: { url: '/' },
+        url: '/',
+      },
+      hydrate: false,
+    })
+    await runtime.initialNavigation
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    const restored = new Event('pageshow') as PageTransitionEvent
+    Object.defineProperty(restored, 'persisted', { value: true })
+    window.dispatchEvent(restored)
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/_ssr/data/',
+        expect.objectContaining({ credentials: 'same-origin' }),
+      )
+    })
+
+    runtime.dispose()
+
+    const afterDispose = fetchMock.mock.calls.length
+    window.dispatchEvent(restored)
+    expect(fetchMock.mock.calls.length).toBe(afterDispose)
+    fetchMock.mockRestore()
+  })
+
+  it('ignores non-persisted pageshow events', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockRejectedValue(
+      new Error('non-persisted pageshow must not fetch'),
+    )
+    const runtime = createApplicationRuntime(testDefinition(), {
+      platform: 'client',
+      initial: {
+        document: { url: '/' },
+        url: '/',
+      },
+      hydrate: false,
+    })
+    await runtime.initialNavigation
+
+    window.dispatchEvent(new Event('pageshow'))
+    await Promise.resolve()
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    runtime.dispose()
+    fetchMock.mockRestore()
+  })
+})
