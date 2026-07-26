@@ -4,6 +4,7 @@ export {
   standardPageDataCodec,
 } from './envelope.js'
 export type {
+  PageDataUnion,
   StandardPageDataContext,
   StandardPageData,
 } from './envelope.js'

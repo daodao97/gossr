@@ -8,19 +8,38 @@ export interface StandardPageDataContext {
 }
 
 /**
- * The standard gossr page-document envelope: a versioned URL-addressed
+ * The standard gossr page-data envelope: a versioned URL-addressed
  * document carrying shared request context, an optional viewer, and one
  * kind-discriminated page payload. Hosts that adopt it get envelope
  * validation and version-skew recovery from the framework; hosts with a
  * different document shape keep supplying their own codec.
+ *
+ * The type parameters let a host substitute its concrete viewer and page
+ * types while inheriting the envelope structure from one place:
+ *
+ *   type PageData = StandardPageData<PageViewer, PageDataUnion<PageDataMap>>
  */
-export interface StandardPageData {
+export interface StandardPageData<
+  Viewer extends object = Record<string, unknown>,
+  Page extends { kind: string, data: object } = { kind: string, data: Record<string, unknown> },
+> {
   schema_version: number
   url: string
   context: StandardPageDataContext
-  viewer: Record<string, unknown> | null
-  page: { kind: string, data: Record<string, unknown> }
+  viewer: Viewer | null
+  page: Page
 }
+
+/**
+ * Builds the kind-discriminated page union from a host's kind → data map,
+ * so hosts declare only the business map:
+ *
+ *   interface PageDataMap { home: HomePageData, ... }
+ *   type PagePayload = PageDataUnion<PageDataMap>
+ */
+export type PageDataUnion<Map> = {
+  [Kind in keyof Map & string]: { kind: Kind, data: Map[Kind] }
+}[keyof Map & string]
 
 /**
  * Structural envelope guard. It deliberately validates structure and
