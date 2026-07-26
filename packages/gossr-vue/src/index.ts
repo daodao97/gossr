@@ -1,7 +1,9 @@
 export { defineGossrApp } from './definition.js'
 export { navigationInjectionKey, useNavigation } from './use-navigation.js'
+export { useStandardPageData } from './use-page-data.js'
 export {
   isStandardPageData,
+  pageDataOf,
   standardPageDataCodec,
 } from './envelope.js'
 export type {

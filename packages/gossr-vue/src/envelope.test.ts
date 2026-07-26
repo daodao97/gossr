@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { parsePageData } from './page-data'
-import { isStandardPageData, standardPageDataCodec } from './envelope'
+import { isStandardPageData, pageDataOf, standardPageDataCodec } from './envelope'
 
 const baseDocument = {
   schema_version: 1,
@@ -68,5 +68,22 @@ describe('standard page-document envelope', () => {
       .toThrowError()
     expect(parsePageData(codec, structuredClone(baseDocument), 'Test').url)
       .toBe('/login?next=%2Fdashboard')
+  })
+})
+
+describe('pageDataOf', () => {
+  interface Map {
+    home: { title: string }
+    login: Record<string, never>
+  }
+
+  it('returns data only for the matching kind', () => {
+    const data = {
+      ...baseDocument,
+      page: { kind: 'home' as const, data: { title: 'hi' } },
+    }
+    expect(pageDataOf<Map, 'home'>(data, 'home')).toEqual({ title: 'hi' })
+    expect(pageDataOf<Map, 'login'>(data, 'login')).toBeUndefined()
+    expect(pageDataOf<Map, 'home'>(undefined, 'home')).toBeUndefined()
   })
 })

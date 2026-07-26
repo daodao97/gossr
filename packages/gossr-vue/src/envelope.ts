@@ -95,3 +95,16 @@ export function standardPageDataCodec<PageData extends { url: string }>(
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
+
+/**
+ * Kind-discriminated accessor for standard-envelope page data: returns the
+ * data only when the committed page carries the requested kind.
+ */
+export function pageDataOf<Map extends { [K in keyof Map]: object }, Kind extends keyof Map & string>(
+  data: StandardPageData<object, PageDataUnion<Map>> | undefined,
+  kind: Kind,
+): Map[Kind] | undefined {
+  if (!data || data.page.kind !== kind)
+    return undefined
+  return data.page.data as Map[Kind]
+}
