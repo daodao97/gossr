@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"sync/atomic"
 
 	"github.com/daodao97/gossr/renderer"
@@ -172,30 +171,9 @@ func decodeStructuredResult(rt *goja.Runtime, value goja.Value) (renderer.Result
 	if err != nil {
 		return renderer.Result{}, err
 	}
-	status, err := optionalResultInt(object.Get("status"), "status")
-	if err != nil {
-		return renderer.Result{}, err
-	}
-
-	result := renderer.Result{HTML: html, Head: head, Status: status}
-	redirectValue := object.Get("redirect")
-	if redirectValue == nil || goja.IsNull(redirectValue) || goja.IsUndefined(redirectValue) {
-		return result, nil
-	}
-	redirectObject := redirectValue.ToObject(rt)
-	if redirectObject.ClassName() != "Object" {
-		return renderer.Result{}, errors.New("structured ssrRender redirect must be an object")
-	}
-	location, err := requiredResultString(redirectObject.Get("location"), "redirect.location")
-	if err != nil {
-		return renderer.Result{}, err
-	}
-	redirectStatus, err := optionalResultInt(redirectObject.Get("status"), "redirect.status")
-	if err != nil {
-		return renderer.Result{}, err
-	}
-	result.Redirect = &renderer.Redirect{Status: redirectStatus, Location: location}
-	return result, nil
+	// HTTP 意图(status/redirect)归 PageResolver 所有,协议上不可表达;
+	// 渲染结果只承载标记。
+	return renderer.Result{HTML: html, Head: head}, nil
 }
 
 func requiredResultString(value goja.Value, name string) (string, error) {
@@ -220,17 +198,3 @@ func optionalResultString(value goja.Value, name string) (string, error) {
 	return exported, nil
 }
 
-func optionalResultInt(value goja.Value, name string) (int, error) {
-	if value == nil || goja.IsNull(value) || goja.IsUndefined(value) {
-		return 0, nil
-	}
-	number, ok := value.Export().(int64)
-	if ok {
-		return int(number), nil
-	}
-	float, ok := value.Export().(float64)
-	if !ok || math.Trunc(float) != float {
-		return 0, fmt.Errorf("structured ssrRender result.%s must be an integer", name)
-	}
-	return int(float), nil
-}

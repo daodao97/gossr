@@ -705,34 +705,6 @@ func TestStructuralSSRTemplateMutationIgnoresScriptText(t *testing.T) {
 	}
 }
 
-func TestTypedRendererOutcomeCannotOverrideResolver(t *testing.T) {
-	page := PageResult{Status: http.StatusNotFound}
-	tests := []struct {
-		name     string
-		rendered renderer.Result
-		wantErr  bool
-	}{
-		{name: "empty status", rendered: renderer.Result{}, wantErr: false},
-		{name: "matching status", rendered: renderer.Result{Status: http.StatusNotFound}, wantErr: false},
-		{name: "conflicting status", rendered: renderer.Result{Status: http.StatusOK}, wantErr: true},
-		{
-			name: "renderer redirect",
-			rendered: renderer.Result{
-				Redirect: &renderer.Redirect{Status: http.StatusFound, Location: "/login"},
-			},
-			wantErr: true,
-		},
-	}
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			err := validateRenderOutcome(page, testCase.rendered)
-			if (err != nil) != testCase.wantErr {
-				t.Fatalf("validateRenderOutcome error=%v, wantErr=%v", err, testCase.wantErr)
-			}
-		})
-	}
-}
-
 func TestDevelopmentRuntimeProxiesModulesAndUpgrade(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	upstreamHosts := make(chan string, 4)

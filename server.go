@@ -130,12 +130,6 @@ func handlePageDocumentWithRenderTimeout(
 		return
 	}
 
-	if err := validateRenderOutcome(resolved, rendered); err != nil {
-		log.Printf("invalid ssr render outcome id=%s path=%q err=%q", reqID, c.Request.URL.Path, err)
-		writeHTMLDocument(c, http.StatusInternalServerError, page.renderFallback(payload, locale, reqID))
-		return
-	}
-
 	// The template was validated boot-free at startup; only rendered output can
 	// smuggle a competing boot element in. A substring check is deliberately
 	// conservative: a false positive merely downgrades to the CSR fallback.
@@ -166,20 +160,6 @@ func resolvePage(ctx context.Context, resolver PageResolver, request PageRequest
 		return PageResult{}, nil, err
 	}
 	return result, payloadToMap(result.Payload), nil
-}
-
-func validateRenderOutcome(page PageResult, rendered renderer.Result) error {
-	if rendered.Redirect != nil {
-		return errors.New("typed renderer must not return a redirect")
-	}
-	if rendered.Status != 0 && rendered.Status != page.Status {
-		return fmt.Errorf(
-			"renderer status %d conflicts with resolver status %d",
-			rendered.Status,
-			page.Status,
-		)
-	}
-	return nil
 }
 
 func setPageCacheHeaders(c *gin.Context, policy CachePolicy) {

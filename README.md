@@ -150,9 +150,10 @@ bundle 必须显式声明 ABI v2，并返回结构化结果（也可返回 Promi
 }
 ```
 
-v2 请求数据只通过函数参数传递。`PageResult` 是 HTTP 状态和跳转的唯一权威，
-renderer 不得覆盖。使用 `@daodao97/gossr-vue` 时,`installGojaRenderABI()`
-已实现该 ABI,应用无需手写。
+v2 请求数据只通过函数参数传递。`PageResult` 是 HTTP 状态和跳转的唯一权威;
+渲染结果只承载 `html`/`head` 标记,协议上不存在表达 HTTP 意图的字段
+(返回值里的其他字段会被忽略)。使用 `@daodao97/gossr-vue` 时,
+`installGojaRenderABI()` 已实现该 ABI,应用无需手写。
 
 ### 3) 内嵌前端产物
 

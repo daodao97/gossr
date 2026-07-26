@@ -223,7 +223,8 @@ globalThis.ssrRender = async function(input) {
   return {
     html: "<main>" + input.url + ":" + input.snapshot.viewer.email + "</main>",
     head: "<title>Account</title>",
-    status: 404
+    status: 404,
+    redirect: { location: "/ignored" }
   };
 };
 `)
@@ -235,35 +236,10 @@ globalThis.ssrRender = async function(input) {
 	if err != nil {
 		t.Fatalf("structured render failed: %v", err)
 	}
+	// HTTP 意图字段(status/redirect)不再存在于协议中,渲染结果只承载标记。
 	if result.HTML != "<main>/account?tab=keys:safe@example.com</main>" ||
-		result.Head != "<title>Account</title>" ||
-		result.Status != 404 ||
-		result.Redirect != nil {
+		result.Head != "<title>Account</title>" {
 		t.Fatalf("unexpected structured result: %#v", result)
-	}
-}
-
-func TestRendererStructuredABIDecodesRedirect(t *testing.T) {
-	t.Setenv("GOJA_POOL_SIZE", "1")
-	r := NewRenderer(`
-globalThis.__GOSSR_RENDER_ABI__ = 2;
-globalThis.ssrRender = function(input) {
-  return Promise.resolve({
-    html: "",
-    redirect: { status: 307, location: "/login?from=" + encodeURIComponent(input.url) }
-  });
-};
-`)
-	t.Cleanup(r.pool.Close)
-
-	result, err := r.Render(context.Background(), "/private", nil)
-	if err != nil {
-		t.Fatalf("structured redirect failed: %v", err)
-	}
-	if result.Redirect == nil ||
-		result.Redirect.Status != 307 ||
-		result.Redirect.Location != "/login?from=%2Fprivate" {
-		t.Fatalf("unexpected redirect result: %#v", result)
 	}
 }
 
@@ -284,13 +260,6 @@ globalThis.ssrRender = function() { return "legacy"; };
 			script: `
 globalThis.__GOSSR_RENDER_ABI__ = 2;
 globalThis.ssrRender = function() { return { head: "<title>missing</title>" }; };
-`,
-		},
-		{
-			name: "fractional status",
-			script: `
-globalThis.__GOSSR_RENDER_ABI__ = 2;
-globalThis.ssrRender = function() { return { html: "bad", status: 200.5 }; };
 `,
 		},
 	}

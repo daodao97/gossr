@@ -26,23 +26,12 @@ func Close(instance Renderer) error {
 // 外部引擎可通过实现 Renderer 并提供 Factory 注入。
 type Factory func(scriptContents string) Renderer
 
-// Redirect is a renderer-declared redirect in the structured ABI result.
-// Typed PageResolver orchestration rejects renderer redirects because
-// PageResult is authoritative for HTTP intent.
-type Redirect struct {
-	Status   int    `json:"status"`
-	Location string `json:"location"`
-}
-
-// Result is the structured output of one SSR render.
-//
-// In a typed PageResolver flow, Status must be zero or match
-// PageResult.Status and Redirect must be nil.
+// Result is the structured output of one SSR render: markup only. HTTP
+// intent (status, redirects, headers) is owned by the host's PageResolver
+// and is deliberately not expressible here.
 type Result struct {
-	HTML     string
-	Head     string
-	Status   int
-	Redirect *Redirect
+	HTML string
+	Head string
 }
 
 const DefaultSSRScriptName = "server.js"

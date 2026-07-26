@@ -241,7 +241,7 @@ func TestTypedPageStatusAndRedirectOutcomes(t *testing.T) {
 		router,
 		func(_ context.Context, request PageRequest) (PageResult, error) {
 			switch request.URL.Path {
-			case "/missing", "/conflict":
+			case "/missing":
 				return PageResult{Status: http.StatusNotFound, Payload: mapPayload{"page": "missing"}}, nil
 			case "/go":
 				return PageResult{Redirect: &Redirect{Status: http.StatusSeeOther, Location: "/login"}}, nil
@@ -249,18 +249,9 @@ func TestTypedPageStatusAndRedirectOutcomes(t *testing.T) {
 				return PageResult{Payload: mapPayload{"page": "ok"}}, nil
 			}
 		},
-		testRenderer(func(_ context.Context, urlPath string, _ map[string]any) (renderer.Result, error) {
+		testRenderer(func(_ context.Context, _ string, _ map[string]any) (renderer.Result, error) {
 			renders.Add(1)
-			switch urlPath {
-			case "/render-go":
-				return renderer.Result{
-					Redirect: &renderer.Redirect{Status: http.StatusTemporaryRedirect, Location: "/login?from=ssr"},
-				}, nil
-			case "/conflict":
-				return renderer.Result{HTML: "<main>conflict</main>", Status: http.StatusInternalServerError}, nil
-			default:
-				return renderer.Result{HTML: "<main>page</main>"}, nil
-			}
+			return renderer.Result{HTML: "<main>page</main>"}, nil
 		}),
 		nil,
 	)
@@ -275,25 +266,6 @@ func TestTypedPageStatusAndRedirectOutcomes(t *testing.T) {
 		t.Fatalf("resolver redirect status=%d location=%q", resolverRedirect.Code, resolverRedirect.Header().Get("Location"))
 	}
 
-	rendererRedirect := htmlRequest(router, http.MethodGet, "/render-go", nil)
-	if rendererRedirect.Code != http.StatusInternalServerError ||
-		rendererRedirect.Header().Get("Location") != "" ||
-		!strings.Contains(rendererRedirect.Body.String(), `name="ssr-error-id"`) {
-		t.Fatalf(
-			"renderer redirect was not rejected: status=%d location=%q body=%s",
-			rendererRedirect.Code,
-			rendererRedirect.Header().Get("Location"),
-			rendererRedirect.Body.String(),
-		)
-	}
-
-	conflict := htmlRequest(router, http.MethodGet, "/conflict", nil)
-	if conflict.Code != http.StatusInternalServerError ||
-		!strings.Contains(conflict.Body.String(), `name="ssr-error-id"`) ||
-		strings.Contains(conflict.Body.String(), `data-ssr="true"`) {
-		t.Fatalf("conflict did not safely fall back: status=%d body=%s", conflict.Code, conflict.Body.String())
-	}
-
 	navigation := navigationRequest(router, "/go", nil)
 	if navigation.Code != http.StatusOK {
 		t.Fatalf("redirect navigation status=%d body=%s", navigation.Code, navigation.Body.String())
@@ -306,9 +278,9 @@ func TestTypedPageStatusAndRedirectOutcomes(t *testing.T) {
 		t.Fatalf("unexpected redirect outcome: %#v", redirect)
 	}
 
-	// /go is resolved twice but never rendered.
-	if got := renders.Load(); got != 3 {
-		t.Fatalf("renderer calls=%d, want 3", got)
+	// /go is resolved twice but never rendered; only /missing renders.
+	if got := renders.Load(); got != 1 {
+		t.Fatalf("renderer calls=%d, want 1", got)
 	}
 }
 

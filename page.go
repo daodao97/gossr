@@ -9,8 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
-
-	"github.com/daodao97/gossr/renderer"
 )
 
 // PageRequestKind identifies why a page is being resolved.
@@ -45,7 +43,10 @@ type PageResolver func(context.Context, PageRequest) (PageResult, error)
 
 // Redirect is deliberately narrower than http.Header. The SSR orchestrator
 // owns Content-Type, cache headers and all other protocol details.
-type Redirect = renderer.Redirect
+type Redirect struct {
+	Status   int    `json:"status"`
+	Location string `json:"location"`
+}
 
 // CachePolicy is a small, safe set of document/navigation cache policies.
 // The zero value is intentionally the safest behavior for personalized SSR.
