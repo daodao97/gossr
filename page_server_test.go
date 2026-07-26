@@ -540,3 +540,31 @@ func TestNavigationResolverErrorUsesTypedNoStoreResponse(t *testing.T) {
 	}
 	assertNoCacheHeaders(t, response.Header())
 }
+
+func TestDocumentHEADSkipsRendering(t *testing.T) {
+	rendered := 0
+	router := gin.New()
+	mountTypedTestSSR(
+		t,
+		router,
+		func(context.Context, PageRequest) (PageResult, error) {
+			return PageResult{Payload: mapPayload{}}, nil
+		},
+		testRenderer(func(context.Context, string, map[string]any) (renderer.Result, error) {
+			rendered++
+			return renderer.Result{HTML: "<main>body</main>"}, nil
+		}),
+		nil,
+	)
+
+	response := htmlRequest(router, http.MethodHead, "/", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("HEAD status=%d", response.Code)
+	}
+	if response.Body.Len() != 0 {
+		t.Fatalf("HEAD carried a body: %q", response.Body.String())
+	}
+	if rendered != 0 {
+		t.Fatalf("HEAD triggered %d SSR renders, want 0", rendered)
+	}
+}

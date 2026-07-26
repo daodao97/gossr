@@ -104,26 +104,15 @@ func (r *Renderer) renderInContainer(
 		return renderer.Result{}, err
 	}
 
-	var argument goja.Value
-	if container.structuredABI {
-		input := rt.NewObject()
-		if err := input.Set("url", urlPath); err != nil {
-			return renderer.Result{}, err
-		}
-		if err := input.Set("snapshot", payloadValue); err != nil {
-			return renderer.Result{}, err
-		}
-		argument = input
-	} else {
-		// Compatibility adapter for pre-v2 bundles. New bundles receive the
-		// snapshot only as an explicit function argument.
-		if err := rt.Set("__SSR_DATA__", payloadValue); err != nil {
-			return renderer.Result{}, err
-		}
-		argument = rt.ToValue(urlPath)
+	input := rt.NewObject()
+	if err := input.Set("url", urlPath); err != nil {
+		return renderer.Result{}, err
+	}
+	if err := input.Set("snapshot", payloadValue); err != nil {
+		return renderer.Result{}, err
 	}
 
-	val, err := container.renderFunc(goja.Undefined(), argument)
+	val, err := container.renderFunc(goja.Undefined(), input)
 	if err != nil {
 		if interrupted.Load() && ctx.Err() != nil {
 			return renderer.Result{}, ctx.Err()
@@ -139,19 +128,7 @@ func (r *Renderer) renderInContainer(
 		return renderer.Result{}, formatGojaError(err)
 	}
 
-	if container.structuredABI {
-		return decodeStructuredResult(rt, resultVal)
-	}
-
-	headVal := rt.Get("__SSR_HEAD__")
-	head := ""
-	if headVal != nil && !goja.IsNull(headVal) && !goja.IsUndefined(headVal) {
-		head = headVal.String()
-	}
-	return renderer.Result{
-		HTML: resultVal.String(),
-		Head: head,
-	}, nil
+	return decodeStructuredResult(rt, resultVal)
 }
 
 func renderPayloadValue(container *runtimeContainer, payload map[string]any) (goja.Value, error) {

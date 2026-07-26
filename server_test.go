@@ -303,7 +303,7 @@ func TestDocumentCacheHeaders(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("DEV_MODE", "")
 
-	router := testRouterWithScript(t, `globalThis.ssrRender = function(url) { return "<div>SSR:" + url + "</div>" }`)
+	router := testRouterWithScript(t, `globalThis.__GOSSR_RENDER_ABI__ = 2; globalThis.ssrRender = function(input) { return { html: "<div>SSR:" + input.url + "</div>" } }`)
 
 	t.Run("ssr html uses no-cache headers", func(t *testing.T) {
 		w := htmlRequest(router, http.MethodGet, "/hello", nil)
@@ -351,7 +351,7 @@ func TestDocumentFallbackKeepsNoCacheHeaders(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("DEV_MODE", "")
 
-	router := testRouterWithScript(t, `globalThis.ssrRender = function() { throw new Error("render failed") }`)
+	router := testRouterWithScript(t, `globalThis.__GOSSR_RENDER_ABI__ = 2; globalThis.ssrRender = function() { throw new Error("render failed") }`)
 
 	w := htmlRequest(router, http.MethodGet, "/fallback", nil)
 

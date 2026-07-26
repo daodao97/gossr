@@ -137,7 +137,8 @@ dist/
     └── server.js
 ```
 
-推荐的 v2 bundle 显式声明 ABI，并返回结构化结果（也可返回 Promise）：
+bundle 必须显式声明 ABI v2，并返回结构化结果（也可返回 Promise）；
+未声明 ABI 的旧式 bundle 会在启动时被拒绝：
 
 ```ts
 ;(globalThis as any).__GOSSR_RENDER_ABI__ = 2
@@ -366,9 +367,9 @@ ginOptions.SSRFetchAuthorizer = func(req *http.Request) (int, bool) {
   只能在"可信反代已覆写这些头"的部署中开启：若客户端可直连服务或反代原样透传，
   伪造的 Host/Proto 会进入 `requestOrigin` 兜底与 `/_ssr/data` 同源判断。
   显式配置 `Config.SiteOrigin` 的宿主不受此影响，推荐始终显式配置。
-- `GOJA_POOL_SIZE` / `GOJA_POOL_TIMEOUT`：goja 池大小与获取超时（默认超时 `5s`）
-  - `GOJA_POOL_SIZE` 会限制在 `[1, 512]`，默认等于 `GOMAXPROCS`
-  - `GOJA_POOL_TIMEOUT` 负值会按 `0` 处理，最大 `30s`
+- `GOJA_POOL_SIZE`：goja 池大小，限制在 `[1, 512]`，默认等于 `GOMAXPROCS`。
+  池等待固定 5s 兜底超时；经过 gossr Runtime 的请求总是先被更短的
+  `PageTimeout` 取消，该兜底只保护无 deadline 的直接调用方
 - `GOJA_RUNTIME_MAX_RENDERS`：单个 goja runtime 的最大渲染次数，默认 `200`，最大 `1000000`；设为 `0` 会关闭回收。Vue 等复杂 bundle 在长时间复用时可能持续扩大 runtime，生产环境不建议关闭
 
 `GOGC` 与 `GOMEMLIMIT` 属于宿主进程的全局 Go 配置，gossr 不会擅自修改。分配密集型 SSR 可在目标机器上重点对比 `GOGC=100/200/300`：提高该值通常能减少 GC CPU，但会增加峰值 RSS，必须结合内存限制和持续压测选择；示例 Vue bundle 在 Apple M3 上的吞吐甜点约为 `GOGC=300`。设置较高 `GOGC` 时建议同时按容器余量设置 `GOMEMLIMIT`，本机示例的 `256MiB` 软限制保留了大部分吞吐；这些数据不是所有应用的通用默认值。

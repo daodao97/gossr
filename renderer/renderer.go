@@ -26,7 +26,7 @@ func Close(instance Renderer) error {
 // 外部引擎可通过实现 Renderer 并提供 Factory 注入。
 type Factory func(scriptContents string) Renderer
 
-// Redirect is retained for compatibility with legacy structured bundles.
+// Redirect is a renderer-declared redirect in the structured ABI result.
 // Typed PageResolver orchestration rejects renderer redirects because
 // PageResult is authoritative for HTTP intent.
 type Redirect struct {
@@ -36,8 +36,8 @@ type Redirect struct {
 
 // Result is the structured output of one SSR render.
 //
-// Status and Redirect are legacy ABI fields. In a typed PageResolver flow,
-// Status must be zero or match PageResult.Status and Redirect must be nil.
+// In a typed PageResolver flow, Status must be zero or match
+// PageResult.Status and Redirect must be nil.
 type Result struct {
 	HTML     string
 	Head     string

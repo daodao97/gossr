@@ -15,14 +15,14 @@ func TestRendererReusesRuntimeAfterCleanScriptError(t *testing.T) {
 	// 变成完整的 bundle 重建。跨请求不可变全局是 bundle 的契约（成功路径
 	// 从来就复用 runtime），异常路径与其保持一致。
 	r := NewRenderer(`
+globalThis.__GOSSR_RENDER_ABI__ = 2;
 globalThis.renders = 0;
-globalThis.ssrRender = function() {
+globalThis.ssrRender = function(input) {
   globalThis.renders++;
-  const data = globalThis.__SSR_DATA__ || {};
-  if (data.fail) {
+  if (input.snapshot.fail) {
     throw new Error("render failed");
   }
-  return String(globalThis.renders);
+  return { html: String(globalThis.renders) };
 };
 `)
 	t.Cleanup(r.pool.Close)
@@ -46,14 +46,14 @@ func TestRendererDiscardsRuntimeAfterInterrupt(t *testing.T) {
 
 	// 中断会留下执行了一半的 JS，runtime 必须丢弃，下一次请求拿到全新实例。
 	r := NewRenderer(`
+globalThis.__GOSSR_RENDER_ABI__ = 2;
 globalThis.renders = 0;
-globalThis.ssrRender = function() {
+globalThis.ssrRender = function(input) {
   globalThis.renders++;
-  const data = globalThis.__SSR_DATA__ || {};
-  if (data.spin) {
+  if (input.snapshot.spin) {
     for (;;) {}
   }
-  return String(globalThis.renders);
+  return { html: String(globalThis.renders) };
 };
 `)
 	t.Cleanup(r.pool.Close)
@@ -76,7 +76,7 @@ globalThis.ssrRender = function() {
 func TestRendererCancellationWatcherCannotInterruptNextRequest(t *testing.T) {
 	t.Setenv("GOJA_POOL_SIZE", "1")
 	t.Setenv("GOJA_RUNTIME_MAX_RENDERS", "0")
-	r := NewRenderer(`globalThis.ssrRender = function() { return "ok" }`)
+	r := NewRenderer(testABIV2OKScript)
 	t.Cleanup(r.pool.Close)
 
 	for i := 0; i < 500; i++ {
@@ -92,6 +92,11 @@ func TestRendererCancellationWatcherCannotInterruptNextRequest(t *testing.T) {
 	}
 }
 
+const testABIV2OKScript = `
+globalThis.__GOSSR_RENDER_ABI__ = 2;
+globalThis.ssrRender = function() { return { html: "ok" } };
+`
+
 func TestNewRendererRejectsMissingSSRRender(t *testing.T) {
 	t.Setenv("GOJA_POOL_SIZE", "1")
 	defer func() {
@@ -102,11 +107,22 @@ func TestNewRendererRejectsMissingSSRRender(t *testing.T) {
 	_ = NewRenderer(`globalThis.notTheEntry = function() { return "wrong" }`)
 }
 
+func TestNewRendererRejectsMissingABIDeclaration(t *testing.T) {
+	t.Setenv("GOJA_POOL_SIZE", "1")
+	defer func() {
+		if recovered := recover(); recovered == nil {
+			t.Fatal("expected renderer construction to panic without ABI v2 declaration")
+		}
+	}()
+	_ = NewRenderer(`globalThis.ssrRender = function() { return "legacy" }`)
+}
+
 func TestRendererProvidesBase64WebAPIs(t *testing.T) {
 	t.Setenv("GOJA_POOL_SIZE", "1")
 	r := NewRenderer(`
+globalThis.__GOSSR_RENDER_ABI__ = 2;
 globalThis.ssrRender = function() {
-  return atob("aGVsbG8=") + ":" + btoa("\u00ff");
+  return { html: atob("aGVsbG8=") + ":" + btoa("ÿ") };
 };
 `)
 	t.Cleanup(r.pool.Close)
@@ -123,10 +139,11 @@ globalThis.ssrRender = function() {
 func TestRendererCannotMutateHostPayload(t *testing.T) {
 	t.Setenv("GOJA_POOL_SIZE", "1")
 	r := NewRenderer(`
-globalThis.ssrRender = function() {
-  globalThis.__SSR_DATA__.session.user.email = "attacker@example.com";
-  globalThis.__SSR_DATA__.items[0].name = "changed";
-  return "ok";
+globalThis.__GOSSR_RENDER_ABI__ = 2;
+globalThis.ssrRender = function(input) {
+  input.snapshot.session.user.email = "attacker@example.com";
+  input.snapshot.items[0].name = "changed";
+  return { html: "ok" };
 };
 `)
 	t.Cleanup(r.pool.Close)
@@ -147,7 +164,7 @@ globalThis.ssrRender = function() {
 
 func TestRendererRejectsNonJSONPayload(t *testing.T) {
 	t.Setenv("GOJA_POOL_SIZE", "1")
-	r := NewRenderer(`globalThis.ssrRender = function() { return "ok" }`)
+	r := NewRenderer(testABIV2OKScript)
 	t.Cleanup(r.pool.Close)
 
 	_, err := r.Render(context.Background(), "/", map[string]any{"invalid": make(chan int)})
@@ -159,15 +176,16 @@ func TestRendererRejectsNonJSONPayload(t *testing.T) {
 func TestRendererNativePayloadPreservesJSONSemantics(t *testing.T) {
 	t.Setenv("GOJA_POOL_SIZE", "1")
 	r := NewRenderer(`
-globalThis.ssrRender = function() {
-  const data = globalThis.__SSR_DATA__;
+globalThis.__GOSSR_RENDER_ABI__ = 2;
+globalThis.ssrRender = function(input) {
+  const data = input.snapshot;
   if (data.nilMap !== null || data.nilItems !== null)
     throw new Error("nil values are not null");
   if (data.object.__proto__ !== "payload-value")
     throw new Error("__proto__ was not an own payload property");
   if (Object.getPrototypeOf(data.object) !== Object.prototype)
     throw new Error("payload changed object prototype");
-  return "ok";
+  return { html: "ok" };
 };
 `)
 	t.Cleanup(r.pool.Close)
@@ -183,7 +201,7 @@ globalThis.ssrRender = function() {
 }
 
 func TestRendererCloseStopsNewRenders(t *testing.T) {
-	r := NewRenderer(`globalThis.ssrRender = function() { return "ok" }`)
+	r := NewRenderer(testABIV2OKScript)
 	if err := r.Close(); err != nil {
 		t.Fatalf("Close() failed: %v", err)
 	}
@@ -286,24 +304,5 @@ globalThis.ssrRender = function() { return { html: "bad", status: 200.5 }; };
 				t.Fatal("invalid structured result was accepted")
 			}
 		})
-	}
-}
-
-func TestRendererLegacyABIStillUsesAmbientAdapter(t *testing.T) {
-	t.Setenv("GOJA_POOL_SIZE", "1")
-	r := NewRenderer(`
-globalThis.ssrRender = function(url) {
-  globalThis.__SSR_HEAD__ = "<title>Legacy</title>";
-  return url + ":" + globalThis.__SSR_DATA__.value;
-};
-`)
-	t.Cleanup(r.pool.Close)
-
-	result, err := r.Render(context.Background(), "/legacy", map[string]any{"value": "ok"})
-	if err != nil {
-		t.Fatalf("legacy render failed: %v", err)
-	}
-	if result.HTML != "/legacy:ok" || result.Head != "<title>Legacy</title>" {
-		t.Fatalf("legacy adapter changed: %#v", result)
 	}
 }

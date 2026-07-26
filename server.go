@@ -108,6 +108,13 @@ func handlePageDocumentWithRenderTimeout(
 		return
 	}
 
+	// HEAD 只需要状态码和响应头(监控探活、链接爬虫常用),渲染出的 body
+	// 本来就会被丢弃,跳过整个 SSR 渲染。
+	if c.Request.Method == http.MethodHead {
+		writeHTMLDocument(c, resolved.Status, "")
+		return
+	}
+
 	locale := explicitLocaleFromPath(pageRequest.URL.Path)
 	reqID := fmt.Sprintf("%d", time.Now().UnixNano())
 	rendered, renderErr := renderWithTimeout(

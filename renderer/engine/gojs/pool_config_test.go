@@ -3,7 +3,6 @@ package gojs
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/dop251/goja"
 )
@@ -28,32 +27,6 @@ func TestParseGojaPoolSize(t *testing.T) {
 			t.Setenv("GOJA_POOL_SIZE", tt.env)
 			if got := parseGojaPoolSize(defaultSize); got != tt.want {
 				t.Fatalf("parseGojaPoolSize(%q)=%d, want %d", tt.env, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestParseGojaPoolTimeout(t *testing.T) {
-	defaultTimeout := defaultGojaPoolTimeout
-
-	tests := []struct {
-		name string
-		env  string
-		want time.Duration
-	}{
-		{name: "default when empty", env: "", want: defaultTimeout},
-		{name: "invalid fallback", env: "abc", want: defaultTimeout},
-		{name: "negative to zero", env: "-1s", want: 0},
-		{name: "above max clamp", env: "60s", want: maxGojaPoolTimeout},
-		{name: "valid timeout", env: "250ms", want: 250 * time.Millisecond},
-		{name: "no unit fallback", env: "5", want: defaultTimeout},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("GOJA_POOL_TIMEOUT", tt.env)
-			if got := parseGojaPoolTimeout(defaultTimeout); got != tt.want {
-				t.Fatalf("parseGojaPoolTimeout(%q)=%s, want %s", tt.env, got, tt.want)
 			}
 		})
 	}
@@ -88,7 +61,7 @@ func TestParseRuntimeMaxUses(t *testing.T) {
 func TestRuntimePoolRecyclesContainerAtMaxUses(t *testing.T) {
 	t.Setenv("GOJA_POOL_SIZE", "1")
 	t.Setenv("GOJA_RUNTIME_MAX_RENDERS", "1")
-	program, err := goja.Compile("test.js", "globalThis.ssrRender = function() { return 'ok' }", false)
+	program, err := goja.Compile("test.js", "globalThis.__GOSSR_RENDER_ABI__ = 2; globalThis.ssrRender = function() { return { html: 'ok' } }", false)
 	if err != nil {
 		t.Fatalf("compile test program: %v", err)
 	}
@@ -109,5 +82,57 @@ func TestRuntimePoolRecyclesContainerAtMaxUses(t *testing.T) {
 	defer pool.Put(second)
 	if first == second {
 		t.Fatal("runtime container was reused after reaching max renders")
+	}
+}
+
+func TestRuntimePoolGetRejectsAlreadyCanceledContext(t *testing.T) {
+	t.Setenv("GOJA_POOL_SIZE", "1")
+	program, err := goja.Compile("test.js", "globalThis.__GOSSR_RENDER_ABI__ = 2; globalThis.ssrRender = function() { return { html: 'ok' } }", false)
+	if err != nil {
+		t.Fatalf("compile test program: %v", err)
+	}
+
+	pool := newRuntimePool(program)
+	t.Cleanup(pool.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := pool.Get(ctx); err != context.Canceled {
+		t.Fatalf("Get error=%v, want context.Canceled", err)
+	}
+	if got := len(pool.idle); got != 1 {
+		t.Fatalf("canceled Get consumed the warmed idle runtime: idle=%d", got)
+	}
+}
+
+func TestRuntimePoolCloseStopsGetAndDropsLateReturns(t *testing.T) {
+	t.Setenv("GOJA_POOL_SIZE", "2")
+	program, err := goja.Compile("test.js", "globalThis.__GOSSR_RENDER_ABI__ = 2; globalThis.ssrRender = function() { return { html: 'ok' } }", false)
+	if err != nil {
+		t.Fatalf("compile test program: %v", err)
+	}
+
+	pool := newRuntimePool(program)
+	held, err := pool.Get(context.Background())
+	if err != nil {
+		t.Fatalf("get runtime: %v", err)
+	}
+
+	pool.Close()
+	pool.Close()
+
+	if _, err := pool.Get(context.Background()); err == nil {
+		t.Fatal("Get succeeded after Close")
+	}
+
+	// 关闭后归还的 runtime 只应递减计数，不应回到空闲队列。
+	pool.Put(held)
+	if got := len(pool.idle); got != 0 {
+		t.Fatalf("late Put re-entered a closed pool: idle=%d", got)
+	}
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	if pool.currentSize != 0 {
+		t.Fatalf("late Put leaked capacity: currentSize=%d", pool.currentSize)
 	}
 }

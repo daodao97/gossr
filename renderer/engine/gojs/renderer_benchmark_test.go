@@ -10,10 +10,13 @@ import (
 )
 
 const benchmarkScript = `
-globalThis.ssrRender = function(url) {
-  const data = globalThis.__SSR_DATA__ || {};
-  globalThis.__SSR_HEAD__ = "<title>" + (data.title || "benchmark") + "</title>";
-  return "<main><h1>" + (data.message || "") + "</h1><p>" + url + "</p></main>";
+globalThis.__GOSSR_RENDER_ABI__ = 2;
+globalThis.ssrRender = function(input) {
+  const data = input.snapshot || {};
+  return {
+    html: "<main><h1>" + (data.message || "") + "</h1><p>" + input.url + "</p></main>",
+    head: "<title>" + (data.title || "benchmark") + "</title>"
+  };
 };
 `
 
