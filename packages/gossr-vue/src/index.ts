@@ -1,5 +1,13 @@
 export { defineGossrApp } from './definition.js'
 export {
+  isStandardPageDocument,
+  standardDocumentCodec,
+} from './envelope.js'
+export type {
+  StandardDocumentContext,
+  StandardPageDocument,
+} from './envelope.js'
+export {
   canonicalNavigationURL,
   documentURLFromRouter,
   navigationURLsMatch,
