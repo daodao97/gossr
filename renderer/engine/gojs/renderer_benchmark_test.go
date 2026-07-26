@@ -30,18 +30,24 @@ var benchmarkPayload = map[string]any{
 	},
 }
 
-var benchmarkPagePayload = map[string]any{
-	"message":     "render a representative page payload",
-	"locale":      "en",
-	"path":        "/",
-	"query":       "",
-	"generatedAt": "2026-07-16T00:00:00+08:00",
-	"siteOrigin":  "https://example.com",
+// examplePageData 构造 example 应用 PageData codec 认可的文档。
+func examplePageData(url string, session map[string]any) map[string]any {
+	return map[string]any{
+		"schema_version": 1,
+		"url":            url,
+		"locale":         "en",
+		"session":        session,
+		"page": map[string]any{
+			"kind":         "demo",
+			"message":      "render a representative page payload",
+			"generated_at": "2026-07-16T00:00:00+08:00",
+		},
+	}
 }
 
 var retainedBenchmarkRenderer *Renderer
 
-func benchmarkRender(b *testing.B, script string, parallel bool) {
+func benchmarkRender(b *testing.B, script string, parallel bool, payload map[string]any) {
 	b.Helper()
 	b.Setenv("GOJA_RUNTIME_MAX_RENDERS", "1000")
 	r := NewRenderer(script)
@@ -50,7 +56,7 @@ func benchmarkRender(b *testing.B, script string, parallel bool) {
 	defer cancel()
 
 	// Ensure startup, compilation and lazy runtime creation are outside the hot-path metric.
-	if _, err := r.Render(ctx, "/benchmark", benchmarkPayload); err != nil {
+	if _, err := r.Render(ctx, "/benchmark", payload); err != nil {
 		b.Fatalf("warm renderer: %v", err)
 	}
 
@@ -59,7 +65,7 @@ func benchmarkRender(b *testing.B, script string, parallel bool) {
 	if parallel {
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				if _, err := r.Render(ctx, "/benchmark?q=gojs", benchmarkPayload); err != nil {
+				if _, err := r.Render(ctx, "/benchmark", payload); err != nil {
 					b.Fatalf("render: %v", err)
 				}
 			}
@@ -68,18 +74,18 @@ func benchmarkRender(b *testing.B, script string, parallel bool) {
 	}
 
 	for i := 0; i < b.N; i++ {
-		if _, err := r.Render(ctx, "/benchmark?q=gojs", benchmarkPayload); err != nil {
+		if _, err := r.Render(ctx, "/benchmark", payload); err != nil {
 			b.Fatalf("render: %v", err)
 		}
 	}
 }
 
 func BenchmarkRendererSynthetic(b *testing.B) {
-	benchmarkRender(b, benchmarkScript, false)
+	benchmarkRender(b, benchmarkScript, false, benchmarkPayload)
 }
 
 func BenchmarkRendererSyntheticParallel(b *testing.B) {
-	benchmarkRender(b, benchmarkScript, true)
+	benchmarkRender(b, benchmarkScript, true, benchmarkPayload)
 }
 
 func BenchmarkRendererExampleBundle(b *testing.B) {
@@ -88,7 +94,7 @@ func BenchmarkRendererExampleBundle(b *testing.B) {
 	if err != nil {
 		b.Skipf("example bundle is unavailable: %v", err)
 	}
-	benchmarkRender(b, string(script), false)
+	benchmarkRender(b, string(script), false, examplePageData("/benchmark", nil))
 }
 
 func BenchmarkRendererExampleBundleParallel(b *testing.B) {
@@ -97,7 +103,7 @@ func BenchmarkRendererExampleBundleParallel(b *testing.B) {
 	if err != nil {
 		b.Skipf("example bundle is unavailable: %v", err)
 	}
-	benchmarkRender(b, string(script), true)
+	benchmarkRender(b, string(script), true, examplePageData("/benchmark", nil))
 }
 
 func BenchmarkRendererExampleRoutes(b *testing.B) {
@@ -107,18 +113,19 @@ func BenchmarkRendererExampleRoutes(b *testing.B) {
 		b.Skipf("example bundle is unavailable: %v", err)
 	}
 
+	authenticated := map[string]any{
+		"user": map[string]any{"email": "benchmark@example.com"},
+	}
 	tests := []struct {
 		name    string
 		url     string
 		payload map[string]any
 	}{
-		{name: "home", url: "/", payload: benchmarkPagePayload},
-		{name: "seo", url: "/seo-demo?title=Benchmark", payload: benchmarkPagePayload},
-		{name: "session", url: "/session-demo", payload: benchmarkPagePayload},
-		{name: "protected", url: "/protected", payload: map[string]any{
-			"session": map[string]any{"user": map[string]any{"email": "benchmark@example.com"}},
-		}},
-		{name: "not-found", url: "/benchmark", payload: benchmarkPayload},
+		{name: "home", url: "/", payload: examplePageData("/", nil)},
+		{name: "seo", url: "/seo-demo?title=Benchmark", payload: examplePageData("/seo-demo?title=Benchmark", nil)},
+		{name: "session", url: "/session-demo", payload: examplePageData("/session-demo", nil)},
+		{name: "protected", url: "/protected", payload: examplePageData("/protected", authenticated)},
+		{name: "not-found", url: "/benchmark", payload: examplePageData("/benchmark", nil)},
 	}
 
 	for _, tt := range tests {
@@ -169,13 +176,14 @@ func BenchmarkRendererExampleBundleRetained(b *testing.B) {
 
 	r := NewRenderer(string(script))
 	retainedBenchmarkRenderer = r
-	if _, err := r.Render(context.Background(), "/benchmark", benchmarkPayload); err != nil {
+	payload := examplePageData("/benchmark", nil)
+	if _, err := r.Render(context.Background(), "/benchmark", payload); err != nil {
 		b.Fatalf("warm renderer: %v", err)
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := r.Render(context.Background(), "/benchmark?q=gojs", benchmarkPayload); err != nil {
+		if _, err := r.Render(context.Background(), "/benchmark", payload); err != nil {
 			b.Fatalf("render: %v", err)
 		}
 	}

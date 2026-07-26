@@ -1,5 +1,45 @@
 # gossr 性能优化报告
 
+## 2026-07-26 复测(架构精简轮之后)
+
+机器同前(Apple M3, darwin/arm64, Go 1.26, `wrk -t4 -c16 -d30s`, 同机压测)。
+此轮之前的架构变更:模板启动预编译、goja 池内联、干净异常复用 runtime、
+ABI 收缩为纯标记、旧 ABI 路径删除。**example 应用本身也变重了**
+(数据信封 + i18n + 非阻塞导航链路,bundle 190KB → 202KB,单次渲染分配
+717KB → 1.77MB),因此与 07-16 表格不构成同应用对比;本节数字是新基线。
+
+### example 应用端到端(GIN_MODE=release)
+
+| 配置 | 吞吐 | p50 | p90 | p99 | 负载后 RSS | 非预期错误 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 默认 GC | 890 req/s | 16.8 ms | 32.7 ms | 101 ms | 143 MiB | 0 |
+| `GOGC=300 GOMEMLIMIT=512MiB` | 1,412 req/s | 9.9 ms | 24.0 ms | 120 ms | 378 MiB | 0 |
+
+瓶颈是 JS 渲染 CPU + 分配速率(~1.6 GB/s 触发的 GC):并行微基准
+`BenchmarkRendererExampleBundleParallel` 的换算吞吐 ≈ 920 ops/s,与
+wrk 观测一致,说明 HTTP 层与模板拼接不构成瓶颈。注意 gin debug 模式
+(每请求日志)会显著拉低吞吐并抬高 p99,压测必须 `GIN_MODE=release`。
+
+### subapi 真实 bundle(线上 gojs 路径,`web/ssr_engine_bench_test.go`)
+
+| 路由 | 串行耗时 | 每次渲染分配 |
+| --- | ---: | ---: |
+| `/`(营销首页) | 4.71 ms | 3.78 MB |
+| `/dashboard` | 4.87 ms | 3.10 MB |
+| `/dashboard/billing` | 5.00 ms | 3.43 MB |
+| `/missing`(404) | 3.20 ms | 2.24 MB |
+| billing 并行(8 核) | 2.11 ms/op | — |
+
+单机文档渲染吞吐上限 ≈ 470 req/s(默认 GC,按并行 2.11 ms/op 换算;
+`GOGC=300` 预计 ~700+)。两点让这个上限在实践中更宽裕:站内导航
+(`/_ssr/data`)只走 resolver 不渲染,不消耗此预算;p99 尖刺主要来自
+runtime 200 次回收的重建(~17.8 ms/次)与 GC,均有界。若指标显示
+document 渲染逼近上限,优先级依次是:`GOGC`/`GOMEMLIMIT` 调优 →
+访客页短缓存 → 渲染层降分配。
+
+---
+
+
 日期：2026-07-16。测试机器：Apple M3，darwin/arm64，Go 1.25，`wrk -t4 -c16`。示例使用生产构建后的真实 Vue SSR bundle，不以简单字符串脚本代替业务渲染。所有数字都是本机观测值，应在目标部署机器复测。
 
 ## 最终结论
