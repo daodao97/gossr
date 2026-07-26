@@ -525,6 +525,12 @@ function installClientNavigationLoader<PageData>(options: {
           releasePending = false
           return true
         }
+        if (preparation.kind === 'error' && preparation.code !== undefined) {
+          // 服务端结构化报错(如 resolver 超时下发的 CSR 壳启动后再次超时):
+          // 整页重载只会拿到同样的壳,形成重载循环。改为无数据挂载——
+          // 路由照常提交,宿主以占位/骨架渲染并展示 error ref 驱动的提示。
+          return true
+        }
         state.handledRoutes.add(to)
         if (preparation.kind === 'redirect')
           return preparation.location

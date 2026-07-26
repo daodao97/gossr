@@ -854,3 +854,39 @@ describe('structured server errors stay in-app', () => {
     fetchMock.mockRestore()
   })
 })
+
+describe('initial navigation with a coded server error', () => {
+  beforeEach(() => {
+    window.history.replaceState({}, '', '/')
+    document.body.innerHTML = '<div id="app"></div>'
+  })
+
+  it('mounts data-less instead of entering a reload loop', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      Response.json({
+        kind: 'error',
+        status: 504,
+        code: 'request_timeout',
+        message: 'page request timed out',
+      }),
+    )
+    const navigateDocument = vi.fn()
+    const runtime = createApplicationRuntime(testDefinition(), {
+      platform: 'client',
+      // CSR 壳没有 boot 数据:initial 缺省,初始导航必须走网络。
+      hydrate: false,
+      navigateDocument,
+    })
+
+    await expect(runtime.initialNavigation).resolves.toMatchObject({
+      fullPath: '/',
+    })
+    expect(navigateDocument).not.toHaveBeenCalled()
+    expect(runtime.navigation.current.value).toBeUndefined()
+    expect(runtime.navigation.error.value).not.toBeNull()
+    expect(runtime.navigation.ready.value).toBe(false)
+
+    runtime.dispose()
+    fetchMock.mockRestore()
+  })
+})
