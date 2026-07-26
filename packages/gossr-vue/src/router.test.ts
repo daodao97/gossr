@@ -21,7 +21,7 @@ describe('Vue Router 5 client initialization', () => {
     const runtime = createApplicationRuntime(testDefinition(), {
       platform: 'client',
       initial: {
-        document: { url: '/' },
+        data: { url: '/' },
         url: '/',
       },
       hydrate: false,
@@ -46,7 +46,7 @@ describe('Vue Router 5 client initialization', () => {
     const runtime = createApplicationRuntime(hashLinkDefinition(), {
       platform: 'client',
       initial: {
-        document: { url: '/?tab=usage' },
+        data: { url: '/?tab=usage' },
         url: '/?tab=usage',
       },
       hydrate: false,
@@ -100,7 +100,7 @@ describe('Vue Router 5 client initialization', () => {
     const runtime = createApplicationRuntime(switchingDefinition(), {
       platform: 'client',
       initial: {
-        document: {
+        data: {
           url: '/dashboard/api-keys',
           version: 'initial',
         },
@@ -182,7 +182,7 @@ describe('Vue Router 5 client initialization', () => {
     const runtime = createApplicationRuntime(switchingDefinition(), {
       platform: 'client',
       initial: {
-        document: {
+        data: {
           url: '/dashboard/api-keys',
           version: 'initial',
         },
@@ -241,7 +241,7 @@ describe('Vue Router 5 client initialization', () => {
     const runtime = createApplicationRuntime(switchingDefinition(), {
       platform: 'client',
       initial: {
-        document: {
+        data: {
           url: '/dashboard/api-keys',
           version: 'initial',
         },
@@ -307,7 +307,7 @@ describe('Vue Router 5 client initialization', () => {
     }), {
       platform: 'client',
       initial: {
-        document: {
+        data: {
           url: '/dashboard/api-keys',
           version: 'initial',
         },
@@ -359,7 +359,7 @@ describe('Vue Router 5 client initialization', () => {
     const runtime = createApplicationRuntime(switchingDefinition(), {
       platform: 'client',
       initial: {
-        document: {
+        data: {
           url: '/dashboard/api-keys',
           version: 'initial',
         },
@@ -394,7 +394,7 @@ describe('Vue Router 5 client initialization', () => {
     const runtime = createApplicationRuntime(switchingDefinition(), {
       platform: 'client',
       initial: {
-        document: {
+        data: {
           url: '/dashboard/api-keys',
           version: 'initial',
         },
@@ -440,7 +440,7 @@ describe('Vue Router 5 client initialization', () => {
     }), {
       platform: 'client',
       initial: {
-        document: {
+        data: {
           url: '/dashboard/api-keys',
           version: 'initial',
         },
@@ -487,7 +487,7 @@ describe('Vue Router 5 client initialization', () => {
     const runtime = createApplicationRuntime(switchingDefinition(), {
       platform: 'client',
       initial: {
-        document: {
+        data: {
           url: '/dashboard/api-keys',
           version: 'initial',
         },
@@ -522,7 +522,7 @@ describe('Vue Router 5 client initialization', () => {
     }), {
       platform: 'client',
       initial: {
-        document: { url: '/' },
+        data: { url: '/' },
         url: '/',
       },
       hydrate: false,
@@ -544,7 +544,7 @@ describe('Vue Router 5 client initialization', () => {
     }), {
       platform: 'client',
       initial: {
-        document: { url: '/' },
+        data: { url: '/' },
         url: '/',
       },
       hydrate: false,
@@ -595,7 +595,7 @@ function testDefinition(
       path: '/',
       component: defineComponent(() => () => h('div')),
     }],
-    document: {
+    pageData: {
       parse: value => value as { url: string },
       url: pageDocument => pageDocument.url,
     },
@@ -619,7 +619,7 @@ function hashLinkDefinition() {
       path: '/',
       component: defineComponent(() => () => h('div')),
     }],
-    document: {
+    pageData: {
       parse: value => value as { url: string },
       url: pageDocument => pageDocument.url,
     },
@@ -650,7 +650,7 @@ function switchingDefinition(
         component: routeComponent,
       },
     ],
-    document: {
+    pageData: {
       parse: value => value as { url: string, version: string },
       url: pageDocument => pageDocument.url,
     },
@@ -697,7 +697,7 @@ function routeMatchingDefinition() {
         component: routeComponent,
       },
     ],
-    document: {
+    pageData: {
       parse: value => value as { url: string },
       url: pageDocument => pageDocument.url,
     },
@@ -721,7 +721,7 @@ describe('bfcache restore revalidation', () => {
     const runtime = createApplicationRuntime(testDefinition(), {
       platform: 'client',
       initial: {
-        document: { url: '/' },
+        data: { url: '/' },
         url: '/',
       },
       hydrate: false,
@@ -754,7 +754,7 @@ describe('bfcache restore revalidation', () => {
     const runtime = createApplicationRuntime(testDefinition(), {
       platform: 'client',
       initial: {
-        document: { url: '/' },
+        data: { url: '/' },
         url: '/',
       },
       hydrate: false,

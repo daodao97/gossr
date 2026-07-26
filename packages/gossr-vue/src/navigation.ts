@@ -1,13 +1,13 @@
 import { shallowRef } from 'vue'
 import type { Ref } from 'vue'
 
-import { parseDocument } from './document.js'
+import { parsePageData } from './page-data.js'
 import { canonicalNavigationURL, navigationURLsMatch } from './url.js'
 import type {
-  DocumentCodec,
+  PageDataCodec,
   NavigationOutcome,
 } from './types.js'
-import type { ParsedDocument } from './document.js'
+import type { ParsedPageData } from './page-data.js'
 
 export type NavigationPreparation =
   | { kind: 'ready' }
@@ -20,7 +20,7 @@ export type NavigationFetcher = (
   signal: AbortSignal,
 ) => Promise<unknown>
 
-interface StagedDocument<Document> extends ParsedDocument<Document> {
+interface StagedDocument<PageData> extends ParsedPageData<PageData> {
   id: number
   targetURL: string
 }
@@ -33,14 +33,14 @@ interface ActiveNavigation {
   promise: Promise<NavigationPreparation>
 }
 
-interface NavigationOptions<Document> {
-  codec: DocumentCodec<Document>
-  initial?: ParsedDocument<Document>
+interface NavigationOptions<PageData> {
+  codec: PageDataCodec<PageData>
+  initial?: ParsedPageData<PageData>
   fetcher?: NavigationFetcher
 }
 
-export interface ManagedNavigationCoordinator<Document> {
-  current: Readonly<Ref<Document | undefined>>
+export interface ManagedNavigationCoordinator<PageData> {
+  current: Readonly<Ref<PageData | undefined>>
   currentURL: Readonly<Ref<string | undefined>>
   loading: Readonly<Ref<boolean>>
   error: Readonly<Ref<Error | null>>
@@ -51,14 +51,14 @@ export interface ManagedNavigationCoordinator<Document> {
   dispose: () => void
 }
 
-export function createNavigationCoordinator<Document>(
-  options: NavigationOptions<Document>,
-): ManagedNavigationCoordinator<Document> {
-  const current = shallowRef<Document | undefined>(options.initial?.document)
+export function createNavigationCoordinator<PageData>(
+  options: NavigationOptions<PageData>,
+): ManagedNavigationCoordinator<PageData> {
+  const current = shallowRef<PageData | undefined>(options.initial?.data)
   const currentURL = shallowRef(options.initial?.url)
   const loading = shallowRef(false)
   const error = shallowRef<Error | null>(null)
-  const staged = shallowRef<StagedDocument<Document>>()
+  const staged = shallowRef<StagedDocument<PageData>>()
   let active: ActiveNavigation | undefined
   let sequence = 0
   let disposed = false
@@ -110,7 +110,7 @@ export function createNavigationCoordinator<Document>(
         id,
         url: currentURL.value,
         targetURL: url,
-        document: current.value,
+        data: current.value,
       }
       return Promise.resolve({ kind: 'ready' })
     }
@@ -149,9 +149,9 @@ export function createNavigationCoordinator<Document>(
           }
         }
 
-        let parsed: ParsedDocument<Document>
+        let parsed: ParsedPageData<PageData>
         try {
-          parsed = parseDocument(options.codec, outcome.snapshot, 'Navigation response')
+          parsed = parsePageData(options.codec, outcome.snapshot, 'Navigation response')
         }
         catch (reason) {
           const cause = asError(reason, 'Navigation response contains an invalid page document')
@@ -214,7 +214,7 @@ export function createNavigationCoordinator<Document>(
     if (!candidate || candidate.id !== sequence || candidate.targetURL !== url)
       return false
 
-    current.value = candidate.document
+    current.value = candidate.data
     currentURL.value = candidate.url
     staged.value = undefined
     error.value = null

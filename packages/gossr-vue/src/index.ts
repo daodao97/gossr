@@ -1,11 +1,11 @@
 export { defineGossrApp } from './definition.js'
 export {
-  isStandardPageDocument,
-  standardDocumentCodec,
+  isStandardPageData,
+  standardPageDataCodec,
 } from './envelope.js'
 export type {
-  StandardDocumentContext,
-  StandardPageDocument,
+  StandardPageDataContext,
+  StandardPageData,
 } from './envelope.js'
 export {
   canonicalNavigationURL,
@@ -15,7 +15,7 @@ export {
 } from './url.js'
 
 export type {
-  DocumentCodec,
+  PageDataCodec,
   GossrAppDefinition,
   GossrAppOptions,
   GossrPlatform,

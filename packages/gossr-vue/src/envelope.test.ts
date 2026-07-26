@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { parseDocument } from './document'
-import { isStandardPageDocument, standardDocumentCodec } from './envelope'
+import { parsePageData } from './page-data'
+import { isStandardPageData, standardPageDataCodec } from './envelope'
 
 const baseDocument = {
   schema_version: 1,
@@ -25,12 +25,12 @@ function documentWith(overrides: Record<string, unknown>) {
 
 describe('standard page-document envelope', () => {
   it('accepts a minimal valid document', () => {
-    expect(isStandardPageDocument(baseDocument)).toBe(true)
+    expect(isStandardPageData(baseDocument)).toBe(true)
   })
 
   it('accepts a nullable viewer and a present viewer', () => {
-    expect(isStandardPageDocument(documentWith({ viewer: null }))).toBe(true)
-    expect(isStandardPageDocument(documentWith({ viewer: { user: {} } }))).toBe(true)
+    expect(isStandardPageData(documentWith({ viewer: null }))).toBe(true)
+    expect(isStandardPageData(documentWith({ viewer: { user: {} } }))).toBe(true)
   })
 
   it.each([
@@ -47,26 +47,26 @@ describe('standard page-document envelope', () => {
     ['null page data', documentWith({ page: { kind: 'login', data: null } })],
     ['non-string page kind', documentWith({ page: { kind: 7, data: {} } })],
   ])('rejects %s', (_name, value) => {
-    expect(isStandardPageDocument(value)).toBe(false)
+    expect(isStandardPageData(value)).toBe(false)
   })
 
   it('honors a custom schema version', () => {
-    expect(isStandardPageDocument(documentWith({ schema_version: 2 }), 2)).toBe(true)
-    expect(isStandardPageDocument(baseDocument, 2)).toBe(false)
+    expect(isStandardPageData(documentWith({ schema_version: 2 }), 2)).toBe(true)
+    expect(isStandardPageData(baseDocument, 2)).toBe(false)
   })
 
-  it('standardDocumentCodec parses valid documents and throws on skew', () => {
-    const codec = standardDocumentCodec<typeof baseDocument>()
+  it('standardPageDataCodec parses valid documents and throws on skew', () => {
+    const codec = standardPageDataCodec<typeof baseDocument>()
     expect(codec.parse(structuredClone(baseDocument)).page.kind).toBe('login')
     expect(() => codec.parse(documentWith({ schema_version: 2 })))
       .toThrowError('standard gossr page document')
   })
 
-  it('unsafe URLs are rejected downstream by parseDocument', () => {
-    const codec = standardDocumentCodec<typeof baseDocument>()
-    expect(() => parseDocument(codec, documentWith({ url: '//evil.example/path' }), 'Test'))
+  it('unsafe URLs are rejected downstream by parsePageData', () => {
+    const codec = standardPageDataCodec<typeof baseDocument>()
+    expect(() => parsePageData(codec, documentWith({ url: '//evil.example/path' }), 'Test'))
       .toThrowError()
-    expect(parseDocument(codec, structuredClone(baseDocument), 'Test').url)
+    expect(parsePageData(codec, structuredClone(baseDocument), 'Test').url)
       .toBe('/login?next=%2Fdashboard')
   })
 })

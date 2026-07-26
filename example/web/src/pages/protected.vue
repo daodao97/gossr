@@ -13,7 +13,7 @@ meta:
 import { useRoute } from 'vue-router'
 
 import { useLocaleText } from '~/composables/useLocaleText'
-import { useSession } from '~/composables/usePageDocument'
+import { useSession } from '~/composables/usePageData'
 
 const route = useRoute()
 const session = useSession()

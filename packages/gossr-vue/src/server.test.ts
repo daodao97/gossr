@@ -27,7 +27,7 @@ describe('generic SSR renderer', () => {
         path: '/:pathMatch(.*)*',
         component: defineComponent(() => () => h('div')),
       }],
-      document: {
+      pageData: {
         parse: value => value as TestDocument,
         url: pageDocument => pageDocument.url,
       },
@@ -79,7 +79,7 @@ describe('generic SSR renderer', () => {
           path: '/',
           component: defineComponent(() => () => h('div')),
         }],
-        document: {
+        pageData: {
           parse: value => value as TestDocument,
           url: pageDocument => pageDocument.url,
         },

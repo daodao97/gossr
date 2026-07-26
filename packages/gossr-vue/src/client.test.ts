@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   bootstrapClient,
-  readBootDocument,
+  readBootPageData,
   shouldHydrateApp,
 } from './client'
 import { defineGossrApp } from './definition'
@@ -34,9 +34,9 @@ describe('boot document and hydration decision', () => {
       </script>
     `
 
-    const initial = readBootDocument(definition)
+    const initial = readBootPageData(definition)
     expect(parseCount).toBe(1)
-    expect(initial?.document.value).toBe('server')
+    expect(initial?.data.value).toBe('server')
     expect(shouldHydrateApp(initial)).toBe(true)
   })
 
@@ -48,12 +48,12 @@ describe('boot document and hydration decision', () => {
         {"url":"/current?tab=one","value":"fallback"}
       </script>
     `
-    expect(shouldHydrateApp(readBootDocument(definition))).toBe(false)
+    expect(shouldHydrateApp(readBootPageData(definition))).toBe(false)
 
     document.querySelector('#app')?.setAttribute('data-ssr', 'true')
     document.querySelector('#__GOSSR_BOOT__')!.textContent
       = '{"url":"/stale","value":"stale"}'
-    expect(shouldHydrateApp(readBootDocument(definition))).toBe(false)
+    expect(shouldHydrateApp(readBootPageData(definition))).toBe(false)
   })
 
   it('keeps the existing DOM node after successful hydration', async () => {
@@ -164,7 +164,7 @@ function testDefinition(parse: (value: unknown) => TestDocument) {
     appId: 'boot-test',
     root: defineComponent(() => () => h('main')),
     routes: [{ path: '/:pathMatch(.*)*', component: defineComponent(() => () => h('div')) }],
-    document: {
+    pageData: {
       parse,
       url: pageDocument => pageDocument.url,
     },
@@ -179,7 +179,7 @@ function domDefinition(text: string) {
       path: '/:pathMatch(.*)*',
       component: defineComponent(() => () => h('div')),
     }],
-    document: {
+    pageData: {
       parse: value => value as TestDocument,
       url: pageDocument => pageDocument.url,
     },

@@ -16,7 +16,7 @@ apps, or hydration flows directly.
 
 The navigation object exposed to application code is deliberately small:
 `current`, `ready`, `loading`, `error`, and a parameterless `refresh()`.
-Preparing a target document, cancelling stale requests, and committing it are
+Preparing a target page's data, cancelling stale requests, and committing it are
 framework-owned details.
 
 The application surface is one `defineGossrApp()` call:
@@ -28,9 +28,9 @@ export default defineGossrApp({
   appId: 'my-app',
   root: App,
   routes,
-  document: {
-    parse: parsePageDocument,
-    url: document => document.url,
+  pageData: {
+    parse: parsePageData,
+    url: pageData => pageData.url,
   },
   setup({ app, router, navigation, onDispose }) {
     // Install application providers and guards.
@@ -60,8 +60,8 @@ import { installGojaRenderABI } from '@daodao97/gossr-vue/server'
 - The initial navigation is blocking: hydration only mounts against its own
   boot document. In-app route changes are non-blocking: the route commits
   immediately so clicks respond instantly, while `current` keeps the previous
-  page's document (stale-while-loading) and `ready` turns true only once the
-  target document is committed. Page content should gate on `ready`; layout
+  page's data (stale-while-loading) and `ready` turns true only once the
+  target page data is committed. Page content should gate on `ready`; layout
   chrome can keep reading `current` without flicker.
 - A failed or unhandled client navigation is left to a full browser request,
   preserving the server as the final redirect and error authority.

@@ -59,7 +59,7 @@ describe('synchronous lifecycle', () => {
       appId: 'lifecycle-test',
       root: defineComponent(() => () => h('main')),
       routes: [{ path: '/', component: defineComponent(() => () => h('div')) }],
-      document: {
+      pageData: {
         parse: value => value as { url: string },
         url: document => document.url,
       },
@@ -74,7 +74,7 @@ describe('synchronous lifecycle', () => {
     expect(() => createApplicationRuntime(definition, {
       platform: 'server',
       initial: {
-        document: { url: '/' },
+        data: { url: '/' },
         url: '/',
       },
     })).toThrow(UnsupportedAsyncLifecycleError)
@@ -88,7 +88,7 @@ describe('synchronous lifecycle', () => {
       appId: 'partial-setup-test',
       root: defineComponent(() => () => h('main')),
       routes: [{ path: '/', component: defineComponent(() => () => h('div')) }],
-      document: {
+      pageData: {
         parse: value => value as { url: string },
         url: document => document.url,
       },
@@ -106,7 +106,7 @@ describe('synchronous lifecycle', () => {
     expect(() => createApplicationRuntime(definition, {
       platform: 'server',
       initial: {
-        document: { url: '/' },
+        data: { url: '/' },
         url: '/',
       },
     })).toThrow('setup failed')

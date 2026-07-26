@@ -14,7 +14,7 @@ import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { useLocaleText } from '~/composables/useLocaleText'
-import { usePage, useSession } from '~/composables/usePageDocument'
+import { usePage, useSession } from '~/composables/usePageData'
 
 const page = usePage()
 const session = useSession()

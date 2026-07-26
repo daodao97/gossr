@@ -1,11 +1,11 @@
 import { attachCleanupError } from './lifecycle.js'
-import { parseDocument } from './document.js'
+import { parsePageData } from './page-data.js'
 import { createApplicationRuntime } from './runtime.js'
 import {
   documentURLFromRouter,
   navigationURLsMatch,
 } from './url.js'
-import type { ParsedDocument } from './document.js'
+import type { ParsedPageData } from './page-data.js'
 import type {
   GossrAppDefinition,
 } from './types.js'
@@ -13,21 +13,21 @@ import type { GossrApplicationRuntime } from './runtime.js'
 
 const bootElementID = '__GOSSR_BOOT__'
 
-export async function bootstrapClient<Document>(
-  definition: GossrAppDefinition<Document>,
-): Promise<GossrApplicationRuntime<Document>> {
+export async function bootstrapClient<PageData>(
+  definition: GossrAppDefinition<PageData>,
+): Promise<GossrApplicationRuntime<PageData>> {
   const bootElement = document.querySelector<HTMLScriptElement>(`#${bootElementID}`)
-  let runtime: GossrApplicationRuntime<Document> | undefined
+  let runtime: GossrApplicationRuntime<PageData> | undefined
 
   try {
     const browserURL = currentBrowserURL()
-    const bootDocument = readBootDocument(definition, bootElement)
-    const initial = bootDocument && navigationURLsMatch(bootDocument.url, browserURL)
-      ? bootDocument
+    const bootPageData = readBootPageData(definition, bootElement)
+    const initial = bootPageData && navigationURLsMatch(bootPageData.url, browserURL)
+      ? bootPageData
       : undefined
-    if (bootDocument && !initial) {
+    if (bootPageData && !initial) {
       console.error(
-        `[ssr] boot page URL mismatch: expected ${browserURL}, received ${bootDocument.url}`,
+        `[ssr] boot page URL mismatch: expected ${browserURL}, received ${bootPageData.url}`,
       )
     }
 
@@ -85,16 +85,16 @@ export async function bootstrapClient<Document>(
   }
 }
 
-export function readBootDocument<Document>(
-  definition: GossrAppDefinition<Document>,
+export function readBootPageData<PageData>(
+  definition: GossrAppDefinition<PageData>,
   bootElement = document.querySelector<HTMLScriptElement>(`#${bootElementID}`),
-): ParsedDocument<Document> | undefined {
+): ParsedPageData<PageData> | undefined {
   if (!bootElement?.textContent)
     return undefined
 
   try {
     const value: unknown = JSON.parse(bootElement.textContent)
-    return parseDocument(definition.document, value, 'Boot')
+    return parsePageData(definition.pageData, value, 'Boot')
   }
   catch (error) {
     console.error('[ssr] boot page document is invalid', error)
@@ -102,8 +102,8 @@ export function readBootDocument<Document>(
   }
 }
 
-export function shouldHydrateApp<Document>(
-  initial: ParsedDocument<Document> | undefined,
+export function shouldHydrateApp<PageData>(
+  initial: ParsedPageData<PageData> | undefined,
 ) {
   const appRoot = document.querySelector<HTMLElement>('#app')
   return appRoot?.dataset.ssr === 'true'
@@ -118,8 +118,8 @@ function currentBrowserURL() {
   return documentURLFromRouter(relative || '/')
 }
 
-async function requireInitialNavigation<Document>(
-  runtime: GossrApplicationRuntime<Document>,
+async function requireInitialNavigation<PageData>(
+  runtime: GossrApplicationRuntime<PageData>,
 ) {
   if (!runtime.initialNavigation)
     throw new Error('Client runtime did not create an initial navigation')

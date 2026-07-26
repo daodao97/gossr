@@ -3,16 +3,16 @@ import type { RouteRecordRaw, Router } from 'vue-router'
 
 export type GossrPlatform = 'server' | 'client'
 
-export interface DocumentCodec<Document> {
-  parse: (value: unknown) => Document
-  url: (document: Document) => string
+export interface PageDataCodec<PageData> {
+  parse: (value: unknown) => PageData
+  url: (pageData: PageData) => string
 }
 
-export type NavigationOutcome<Document> =
+export type NavigationOutcome<PageData> =
   | {
     kind: 'render'
     status: number
-    snapshot: Document
+    snapshot: PageData
   }
   | {
     kind: 'redirect'
@@ -26,42 +26,42 @@ export type NavigationOutcome<Document> =
     message: string
   }
 
-export interface NavigationCoordinator<Document> {
+export interface NavigationCoordinator<PageData> {
   /**
-   * The last committed page document. During a client navigation it keeps
+   * The last committed page data. During a client navigation it keeps
    * pointing at the previous page (stale-while-loading) so layout chrome
    * such as the viewer never flickers; page content should gate on `ready`.
    */
-  current: Readonly<Ref<Document | undefined>>
-  /** True when `current` is the document for the active route. */
+  current: Readonly<Ref<PageData | undefined>>
+  /** True when `current` is the page data for the active route. */
   ready: Readonly<Ref<boolean>>
   loading: Readonly<Ref<boolean>>
   error: Readonly<Ref<Error | null>>
   refresh: () => Promise<boolean>
 }
 
-export interface GossrSetupContext<Document> {
+export interface GossrSetupContext<PageData> {
   app: App
   router: Router
-  navigation: NavigationCoordinator<Document>
+  navigation: NavigationCoordinator<PageData>
   platform: GossrPlatform
   onDispose: (disposer: () => void) => void
 }
 
-export interface GossrAppOptions<Document> {
+export interface GossrAppOptions<PageData> {
   appId: string
   root: Component
   routes: Readonly<RouteRecordRaw[]>
-  document: DocumentCodec<Document>
-  setup?: (context: GossrSetupContext<Document>) => void
+  pageData: PageDataCodec<PageData>
+  setup?: (context: GossrSetupContext<PageData>) => void
 }
 
-export interface GossrAppDefinition<Document> {
+export interface GossrAppDefinition<PageData> {
   readonly appId: string
   readonly root: Component
   readonly routes: Readonly<RouteRecordRaw[]>
-  readonly document: DocumentCodec<Document>
-  readonly setup?: (context: GossrSetupContext<Document>) => void
+  readonly pageData: PageDataCodec<PageData>
+  readonly setup?: (context: GossrSetupContext<PageData>) => void
 }
 
 export interface SSRRenderInput {

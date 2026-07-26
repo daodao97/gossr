@@ -32,34 +32,34 @@ import {
   documentURLFromRouter,
   navigationURLsMatch,
 } from './url.js'
-import type { ParsedDocument } from './document.js'
+import type { ParsedPageData } from './page-data.js'
 import type {
   GossrAppDefinition,
   GossrPlatform,
   NavigationCoordinator,
 } from './types.js'
 
-interface RuntimeOptions<Document> {
+interface RuntimeOptions<PageData> {
   platform: GossrPlatform
-  initial?: ParsedDocument<Document>
+  initial?: ParsedPageData<PageData>
   hydrate?: boolean
   navigateDocument?: (url: string) => void
 }
 
-export interface GossrApplicationRuntime<Document> {
+export interface GossrApplicationRuntime<PageData> {
   readonly app: App
   readonly router: Router
-  readonly navigation: NavigationCoordinator<Document>
+  readonly navigation: NavigationCoordinator<PageData>
   readonly platform: GossrPlatform
   readonly initialNavigation?: Promise<RouteLocationNormalized>
   mount: (container: string | Element) => ComponentPublicInstance
   dispose: () => void
 }
 
-export function createApplicationRuntime<Document>(
-  definition: GossrAppDefinition<Document>,
-  options: RuntimeOptions<Document>,
-): GossrApplicationRuntime<Document> {
+export function createApplicationRuntime<PageData>(
+  definition: GossrAppDefinition<PageData>,
+  options: RuntimeOptions<PageData>,
+): GossrApplicationRuntime<PageData> {
   const app = createVueApp(definition, options)
   const history = createHistory(options.platform)
   let router: Router
@@ -77,10 +77,10 @@ export function createApplicationRuntime<Document>(
     throwAfterHistoryCleanup(error, history)
   }
 
-  let managedNavigation: ManagedNavigationCoordinator<Document>
+  let managedNavigation: ManagedNavigationCoordinator<PageData>
   try {
     managedNavigation = createNavigationCoordinator({
-      codec: definition.document,
+      codec: definition.pageData,
       initial: options.initial,
       fetcher: options.platform === 'client' ? fetchNavigationOutcome : undefined,
     })
@@ -227,9 +227,9 @@ export function createApplicationRuntime<Document>(
   }
 }
 
-function createVueApp<Document>(
-  definition: GossrAppDefinition<Document>,
-  options: RuntimeOptions<Document>,
+function createVueApp<PageData>(
+  definition: GossrAppDefinition<PageData>,
+  options: RuntimeOptions<PageData>,
 ) {
   if (options.platform === 'server' || options.hydrate)
     return createSSRApp(definition.root)
@@ -299,12 +299,12 @@ function createClientNavigationState(
   }
 }
 
-function createPublicNavigation<Document>(
+function createPublicNavigation<PageData>(
   platform: GossrPlatform,
   router: Router,
-  navigation: ManagedNavigationCoordinator<Document>,
+  navigation: ManagedNavigationCoordinator<PageData>,
   clientState: ClientNavigationState | undefined,
-): NavigationCoordinator<Document> {
+): NavigationCoordinator<PageData> {
   // Stale-while-loading: `current` keeps the last committed document during a
   // client navigation so persistent chrome (viewer, layout) never flickers.
   // Page-level content gates on `ready` instead.
@@ -355,10 +355,10 @@ function createPublicNavigation<Document>(
   }
 }
 
-function installClientNavigationObservers<Document>(options: {
+function installClientNavigationObservers<PageData>(options: {
   appId: string
   router: Router
-  navigation: ManagedNavigationCoordinator<Document>
+  navigation: ManagedNavigationCoordinator<PageData>
   state: ClientNavigationState
   frameworkDisposers: Array<() => void>
 }) {
@@ -450,9 +450,9 @@ function installClientNavigationObservers<Document>(options: {
   }))
 }
 
-function installClientNavigationLoader<Document>(options: {
+function installClientNavigationLoader<PageData>(options: {
   router: Router
-  navigation: ManagedNavigationCoordinator<Document>
+  navigation: ManagedNavigationCoordinator<PageData>
   state: ClientNavigationState
   frameworkDisposers: Array<() => void>
 }) {
@@ -539,8 +539,8 @@ function releasePendingRoute(state: ClientNavigationState) {
 // bfcache 恢复的页面是内存快照,可能跨越了登出/换号(部分浏览器对
 // no-store 页面仍启用 bfcache)。恢复时重验证当前文档:会话已变化时
 // refresh 沿用服务端裁决——重定向走路由替换,失败退回整页导航。
-function installRestoredPageRevalidation<Document>(
-  navigation: NavigationCoordinator<Document>,
+function installRestoredPageRevalidation<PageData>(
+  navigation: NavigationCoordinator<PageData>,
   frameworkDisposers: Array<() => void>,
 ) {
   if (typeof window === 'undefined')
@@ -605,8 +605,8 @@ function createInitialNavigationTracker(
   }
 }
 
-export async function navigateServerRuntime<Document>(
-  runtime: GossrApplicationRuntime<Document>,
+export async function navigateServerRuntime<PageData>(
+  runtime: GossrApplicationRuntime<PageData>,
   rawTarget: string,
   documentURL: string,
 ) {

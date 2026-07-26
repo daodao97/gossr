@@ -16,7 +16,7 @@ const expectedFunctions = [
   [runtime, 'defineGossrApp'],
   [client, 'bootstrapClient'],
   [server, 'installGojaRenderABI'],
-  [testing, 'parseDocument'],
+  [testing, 'parsePageData'],
   [vite, 'gossrVuePreset'],
   [vite, 'gossrGojaSsrPreset'],
 ]

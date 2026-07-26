@@ -1,6 +1,6 @@
-import type { DocumentCodec } from './types.js'
+import type { PageDataCodec } from './types.js'
 
-export interface StandardDocumentContext {
+export interface StandardPageDataContext {
   site_origin: string
   locale: string
   time_zone: string
@@ -14,10 +14,10 @@ export interface StandardDocumentContext {
  * validation and version-skew recovery from the framework; hosts with a
  * different document shape keep supplying their own codec.
  */
-export interface StandardPageDocument {
+export interface StandardPageData {
   schema_version: number
   url: string
-  context: StandardDocumentContext
+  context: StandardPageDataContext
   viewer: Record<string, unknown> | null
   page: { kind: string, data: Record<string, unknown> }
 }
@@ -26,12 +26,12 @@ export interface StandardPageDocument {
  * Structural envelope guard. It deliberately validates structure and
  * schema_version only: per-kind payload shapes are guaranteed by the host's
  * server-side type system and are not re-validated in the client. URL
- * validity is owned by parseDocument, which canonicalizes codec.url() next.
+ * validity is owned by parsePageData, which canonicalizes codec.url() next.
  */
-export function isStandardPageDocument(
+export function isStandardPageData(
   value: unknown,
   schemaVersion = 1,
-): value is StandardPageDocument {
+): value is StandardPageData {
   if (!isRecord(value) || value.schema_version !== schemaVersion || typeof value.url !== 'string')
     return false
 
@@ -58,14 +58,14 @@ export function isStandardPageDocument(
  * and the runtime falls back to a full browser navigation, which loads the
  * current bundle and self-heals.
  */
-export function standardDocumentCodec<Document extends { url: string }>(
+export function standardPageDataCodec<PageData extends { url: string }>(
   schemaVersion = 1,
-): DocumentCodec<Document> {
+): PageDataCodec<PageData> {
   return {
     parse(value) {
-      if (!isStandardPageDocument(value, schemaVersion))
+      if (!isStandardPageData(value, schemaVersion))
         throw new Error('value is not a standard gossr page document')
-      return value as unknown as Document
+      return value as unknown as PageData
     },
     url(document) {
       return document.url

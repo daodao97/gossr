@@ -2,9 +2,9 @@ import type { GossrAppDefinition, GossrAppOptions } from './types.js'
 
 const appIDPattern = /^[a-z\d](?:[a-z\d._-]{0,62}[a-z\d])?$/i
 
-export function defineGossrApp<Document>(
-  options: GossrAppOptions<Document>,
-): GossrAppDefinition<Document> {
+export function defineGossrApp<PageData>(
+  options: GossrAppOptions<PageData>,
+): GossrAppDefinition<PageData> {
   if (!appIDPattern.test(options.appId))
     throw new Error('gossr appId must be 1-64 URL/storage-safe characters')
   if (!options.root)
@@ -12,11 +12,11 @@ export function defineGossrApp<Document>(
   if (!Array.isArray(options.routes))
     throw new Error('gossr routes must be an array')
   if (
-    !options.document
-    || typeof options.document.parse !== 'function'
-    || typeof options.document.url !== 'function'
+    !options.pageData
+    || typeof options.pageData.parse !== 'function'
+    || typeof options.pageData.url !== 'function'
   ) {
-    throw new Error('gossr document codec must provide parse() and url()')
+    throw new Error('gossr pageData codec must provide parse() and url()')
   }
   if (options.setup !== undefined && typeof options.setup !== 'function')
     throw new Error('gossr setup must be a function')
@@ -25,7 +25,7 @@ export function defineGossrApp<Document>(
     appId: options.appId,
     root: options.root,
     routes: options.routes,
-    document: options.document,
+    pageData: options.pageData,
     setup: options.setup,
   })
 }

@@ -1,6 +1,6 @@
 import { renderToString } from '@vue/server-renderer'
 
-import { parseDocument } from './document.js'
+import { parsePageData } from './page-data.js'
 import { attachCleanupError } from './lifecycle.js'
 import {
   createApplicationRuntime,
@@ -8,18 +8,18 @@ import {
 } from './runtime.js'
 import { canonicalNavigationURL } from './url.js'
 import type {
-  DocumentCodec,
+  PageDataCodec,
   GossrAppDefinition,
   SSRRenderInput,
   SSRRenderResult,
 } from './types.js'
-import type { ParsedDocument } from './document.js'
+import type { ParsedPageData } from './page-data.js'
 
-export function createSSRRenderer<Document>(
-  definition: GossrAppDefinition<Document>,
+export function createSSRRenderer<PageData>(
+  definition: GossrAppDefinition<PageData>,
 ) {
   return async function renderSSR(input: SSRRenderInput): Promise<SSRRenderResult> {
-    const { target, parsed } = decodeSSRRenderInput(definition.document, input)
+    const { target, parsed } = decodeSSRRenderInput(definition.pageData, input)
 
     const runtime = createApplicationRuntime(definition, {
       platform: 'server',
@@ -64,22 +64,22 @@ export function createSSRRenderer<Document>(
   }
 }
 
-export function decodeSSRRenderInput<Document>(
-  codec: DocumentCodec<Document>,
+export function decodeSSRRenderInput<PageData>(
+  codec: PageDataCodec<PageData>,
   input: unknown,
-): { target: string, parsed: ParsedDocument<Document> } {
+): { target: string, parsed: ParsedPageData<PageData> } {
   if (!isRecord(input) || typeof input.url !== 'string')
     throw new Error('SSR renderer received an invalid input')
 
   const target = canonicalNavigationURL(input.url)
-  const parsed = parseDocument(codec, input.snapshot, 'SSR')
+  const parsed = parsePageData(codec, input.snapshot, 'SSR')
   if (parsed.url !== target)
     throw new Error('SSR renderer URL does not match its page document')
   return { target, parsed }
 }
 
-export function installGojaRenderABI<Document>(
-  definition: GossrAppDefinition<Document>,
+export function installGojaRenderABI<PageData>(
+  definition: GossrAppDefinition<PageData>,
 ) {
   type SSRGlobal = typeof globalThis & {
     __GOSSR_RENDER_ABI__?: number

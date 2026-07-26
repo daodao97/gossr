@@ -2,7 +2,7 @@
 import { Fragment, computed } from 'vue'
 import { RouterView, useRoute } from 'vue-router'
 
-import { useNavigation } from '~/composables/usePageDocument'
+import { useNavigation } from '~/composables/usePageData'
 import { layouts } from '~/modules/layouts'
 
 const route = useRoute()
