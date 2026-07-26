@@ -64,12 +64,13 @@ go run github.com/daodao97/gossr/cmd/gossr-init@latest \
 完整项目生成后执行：
 
 ```bash
-cd gossr-app/web
+cd gossr-app
+go mod tidy      # 构建冒烟经 go run 调用 gossr-smoke,需要先解析依赖
+cd web
 npm install
 npm run typecheck
 npm run build
 cd ..
-go mod tidy
 go run .
 ```
 

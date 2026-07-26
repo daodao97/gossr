@@ -60,10 +60,10 @@ func main() {
 
 	fmt.Printf("Initialized %s with the %s template (%d create, %d replace, %d unchanged).\n", dir, options.Template, result.Created, result.Replaced, result.Unchanged)
 	if options.Template == "fullstack" {
-		fmt.Printf("Next:\n  cd %s/web\n  npm install\n  npm run build\n  cd ..\n  go mod tidy\n  go run .\n", options.Dir)
+		fmt.Printf("Next:\n  cd %s\n  go mod tidy\n  cd web\n  npm install\n  npm run build\n  cd ..\n  go run .\n", options.Dir)
 		return
 	}
-	fmt.Printf("Next:\n  cd %s\n  npm install\n  npm run build\n", options.Dir)
+	fmt.Printf("Next:\n  cd %s\n  npm install\n  npm run build   # 冒烟经 go run 调用 gossr-smoke,宿主 Go module 需先 go mod tidy\n", options.Dir)
 }
 
 func isTerminal(file *os.File) bool {

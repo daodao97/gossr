@@ -6,8 +6,14 @@ Generated from the gossr `__GOSSR_TEMPLATE__` Vue template.
 npm install
 npm run dev       # Vite on 127.0.0.1:3333
 npm run typecheck
-npm run build     # dist/client + dist/server/server.js
+npm run build     # gossr-build: staged dual build + verify + goja smoke + atomic publish
 ```
+
+`npm run build` runs the gossr build pipeline (`gossr-build`): staged Vite
+builds, artifact verification, a real goja render smoke against
+`testdata/smoke-snapshot.json`, and an atomic publish into `dist/`. The
+smoke invokes `go run github.com/daodao97/gossr/cmd/gossr-smoke`, so run
+`go mod tidy` at the host Go module root once before the first build.
 
 The generated `embed.go` exposes `Dist`. Wire it into the host Go application
 with one `PageResolver` — the same resolver serves the initial document and

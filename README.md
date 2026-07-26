@@ -62,11 +62,12 @@ bootstrap、每请求 SSR app、router/history、导航协调器与清理顺序�
 ```bash
 go run github.com/daodao97/gossr/cmd/gossr-init@latest
 
-cd gossr-app/web
+cd gossr-app
+go mod tidy      # 构建冒烟经 go run 调用 gossr-smoke,需要先解析依赖
+cd web
 npm install
-npm run build
+npm run build    # gossr-build:双构建 + 产物体检 + goja 冒烟 + 原子发布
 cd ..
-go mod tidy
 go run .
 ```
 

@@ -354,8 +354,17 @@ function runSSRBundleSmoke(serverEntry, options) {
         reject(new Error(`staged SSR smoke exceeded ${SSR_SMOKE_TIMEOUT_MS / 1000}s and was terminated`))
       else if (code === 0)
         resolvePromise()
-      else
+      else if (!options.smokeBinary) {
+        reject(new Error(
+          `staged SSR smoke failed (${signal ?? `exit ${code}`}); `
+          + 'the smoke runs `go run github.com/daodao97/gossr/cmd/gossr-smoke` — '
+          + 'make sure this directory is inside a Go module that requires gossr '
+          + '(run `go mod tidy` at the module root first)',
+        ))
+      }
+      else {
         reject(new Error(`staged SSR smoke failed (${signal ?? `exit ${code}`})`))
+      }
     })
   })
 }
@@ -400,7 +409,12 @@ async function acquireLock() {
 }
 
 function runVite(args, debug) {
-  const command = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
+  // 直接调本地 vite bin,不依赖宿主用哪种包管理器。
+  const command = resolve(
+    WEB_ROOT,
+    'node_modules/.bin',
+    process.platform === 'win32' ? 'vite.cmd' : 'vite',
+  )
   const childEnv = {
     ...process.env,
     // 两个变体都是生产 Vue 构建;variant 只控制水合诊断。
@@ -414,7 +428,7 @@ function runVite(args, debug) {
   }
 
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, ['exec', 'vite', 'build', ...args], {
+    const child = spawn(command, ['build', ...args], {
       cwd: WEB_ROOT,
       env: childEnv,
       stdio: 'inherit',

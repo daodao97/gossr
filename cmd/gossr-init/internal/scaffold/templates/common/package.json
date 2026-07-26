@@ -8,9 +8,9 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 3333",
     "typecheck": "tsc --noEmit",
-    "build": "npm run build:client && npm run build:server",
-    "build:client": "vite build --ssrManifest --outDir ./dist/client --emptyOutDir",
-    "build:server": "vite build -c vite.config.server.ts --outDir ./dist/server --emptyOutDir"
+    "build": "gossr-build --smoke-snapshot testdata/smoke-snapshot.json --smoke-url /__gossr_build_smoke__ --smoke-expect \"Page not found\"",
+    "verify:bundle": "gossr-build verify",
+    "smoke:bundle": "gossr-build smoke --smoke-snapshot testdata/smoke-snapshot.json --smoke-url /__gossr_build_smoke__ --smoke-expect \"Page not found\""
   },
   "dependencies": {
     "@vue/server-renderer": "^3.5.39",
