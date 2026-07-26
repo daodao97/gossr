@@ -25,6 +25,7 @@ import {
   isThenable,
 } from './lifecycle.js'
 import { createNavigationCoordinator, fetchNavigationOutcome } from './navigation.js'
+import type { ManagedNavigationCoordinator, NavigationPreparation } from './navigation.js'
 import { clearStaleClientRecovery, recoverStaleClientRoute } from './stale-client.js'
 import {
   canonicalNavigationURL,
@@ -37,7 +38,6 @@ import type {
   GossrPlatform,
   NavigationCoordinator,
 } from './types.js'
-import type { ManagedNavigationCoordinator } from './navigation.js'
 
 interface RuntimeOptions<Document> {
   platform: GossrPlatform
@@ -257,6 +257,10 @@ function caseSensitiveRouteRecords(
 
 interface PreparedClientRoute {
   documentURL: string
+  // Present only for non-blocking (post-initial) navigations. The initial
+  // navigation commits synchronously in afterEach so hydration never mounts
+  // before its document is current.
+  preparation?: Promise<NavigationPreparation>
 }
 
 interface ClientNavigationState {
@@ -300,20 +304,24 @@ function createPublicNavigation<Document>(
   navigation: ManagedNavigationCoordinator<Document>,
   clientState: ClientNavigationState | undefined,
 ): NavigationCoordinator<Document> {
-  const current = platform === 'client'
+  // Stale-while-loading: `current` keeps the last committed document during a
+  // client navigation so persistent chrome (viewer, layout) never flickers.
+  // Page-level content gates on `ready` instead.
+  const ready = platform === 'client'
     ? computed(() => {
         const route = router.currentRoute.value
         if (route === START_LOCATION)
-          return navigation.current.value
+          return navigation.current.value !== undefined
         const documentURL = safeDocumentURL(route.fullPath)
-        return documentURL === undefined
-          ? undefined
-          : navigation.documentFor(documentURL)
+        return documentURL !== undefined
+          && navigation.currentURL.value !== undefined
+          && navigationURLsMatch(navigation.currentURL.value, documentURL)
       })
-    : navigation.current
+    : computed(() => navigation.current.value !== undefined)
 
   return {
-    current,
+    current: navigation.current,
+    ready,
     loading: navigation.loading,
     error: navigation.error,
     async refresh() {
@@ -383,22 +391,58 @@ function installClientNavigationObservers<Document>(options: {
     const prepared = state.preparedRoutes.get(to)
     const handled = state.handledRoutes.has(to)
     state.handledRoutes.delete(to)
-    if (prepared) {
+    if (prepared)
       state.preparedRoutes.delete(to)
-      releasePendingRoute(state)
-      if (!failure && !navigation.commit(prepared.documentURL))
-        state.fallback(to.fullPath)
-    }
 
     if (failure) {
+      if (prepared)
+        releasePendingRoute(state)
       if (
-        !prepared
-        && !handled
+        !handled
+        && (!prepared || prepared.preparation)
         && !isNavigationFailure(failure, NavigationFailureType.cancelled)
       ) {
         navigation.cancelRoute()
       }
       return
+    }
+
+    if (prepared) {
+      if (!prepared.preparation) {
+        // Blocking (initial) navigation: the document was staged before the
+        // route committed, so hydration mounts against its own data.
+        releasePendingRoute(state)
+        if (!navigation.commit(prepared.documentURL))
+          state.fallback(to.fullPath)
+      }
+      else {
+        // Non-blocking navigation: the route is already committed; settle the
+        // document whenever its load finishes, unless a newer route took over.
+        void prepared.preparation.then((preparation) => {
+          releasePendingRoute(state)
+          if (preparation.kind === 'cancelled')
+            return
+          const activeURL = safeDocumentURL(router.currentRoute.value.fullPath)
+          if (
+            activeURL === undefined
+            || !navigationURLsMatch(activeURL, prepared.documentURL)
+          ) {
+            return
+          }
+          if (preparation.kind === 'ready') {
+            if (!navigation.commit(prepared.documentURL))
+              state.fallback(to.fullPath)
+            return
+          }
+          if (preparation.kind === 'redirect') {
+            router.replace(preparation.location).catch(() => {
+              state.fallback(preparation.location)
+            })
+            return
+          }
+          state.fallback(prepared.documentURL)
+        })
+      }
     }
 
     clearStaleClientRecovery(appId)
@@ -445,33 +489,45 @@ function installClientNavigationLoader<Document>(options: {
       return true
     }
 
-    state.pendingRoutes += 1
-    let releasePending = true
-    try {
-      const preparation = await navigation.prepare(documentURL, {
-        force: from !== START_LOCATION,
-      })
-      if (preparation.kind === 'ready') {
-        state.preparedRoutes.set(to, { documentURL })
-        releasePending = false
-        return true
+    if (from === START_LOCATION) {
+      // The initial navigation stays blocking: hydration must mount against
+      // the boot document, and there is no previous page to keep showing.
+      state.pendingRoutes += 1
+      let releasePending = true
+      try {
+        const preparation = await navigation.prepare(documentURL)
+        if (preparation.kind === 'ready') {
+          state.preparedRoutes.set(to, { documentURL })
+          releasePending = false
+          return true
+        }
+        state.handledRoutes.add(to)
+        if (preparation.kind === 'redirect')
+          return preparation.location
+        if (preparation.kind === 'error')
+          state.fallback(documentURL)
+        return false
       }
-      state.handledRoutes.add(to)
-      if (preparation.kind === 'redirect')
-        return preparation.location
-      if (preparation.kind === 'error')
-        state.fallback(documentURL)
-      return false
+      catch {
+        state.handledRoutes.add(to)
+        state.fallback(to.fullPath)
+        return false
+      }
+      finally {
+        if (releasePending)
+          releasePendingRoute(state)
+      }
     }
-    catch {
-      state.handledRoutes.add(to)
-      state.fallback(to.fullPath)
-      return false
-    }
-    finally {
-      if (releasePending)
-        releasePendingRoute(state)
-    }
+
+    // In-app navigation is non-blocking: commit the route immediately so the
+    // page responds on click, and let afterEach settle the document when the
+    // load finishes. `current` keeps the previous document until then.
+    state.pendingRoutes += 1
+    state.preparedRoutes.set(to, {
+      documentURL,
+      preparation: navigation.prepare(documentURL, { force: true }),
+    })
+    return true
   }))
 }
 
