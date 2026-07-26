@@ -88,6 +88,31 @@ kind/outcome/status/总时长/渲染时长;回调 panic 被吞)与
 宿主自己接 Prometheus 等。关键信号:`outcome=fallback` 应长期为 0;
 discard 计数突增 = 渲染中断频繁;渲染 p99 持续偏高才考虑渲染缓存。
 
+## 构建管线(gossr-build)
+
+`dist/` 会被 embed 进宿主二进制直接上线,坏 bundle 就是线上事故——所以
+构建不用裸 `vite build`,而用 `packages/gossr-vue/bin/gossr-build.mjs`
+(随包发布的 bin;直接调宿主本地 `node_modules/.bin/vite`,包管理器无关):
+
+```
+加构建锁 → 临时目录 staging → client/server 双 Vite 构建 → manifest
+(源码/产物 sha256 摘要 + buildId) → 产物体检 → goja 渲染冒烟 →
+原子发布(rename 换入 dist/) → 发布后复验,失败自动回滚上一个 bundle
+```
+
+- **产物体检**拦"构建成功但线上必炸"的 bundle:未声明 ABI v2 / 无
+  `ssrRender`、非真 Vue SSR 编译、含 `require()`/`Buffer`/`global.`
+  (goja 里必挂)、server 目录混入浏览器资产、index.html 引用的资产缺失。
+- **冒烟**经 `go run github.com/daodao97/gossr/cmd/gossr-smoke` 用线上
+  真实 gojs 引擎渲染宿主提供的快照,断言输出含期望文本。版本随宿主
+  go.mod 锁定,因此**首次构建前宿主 Go module 需先 `go mod tidy`**。
+- 子命令:`build`(默认) / `verify`(现有 dist 与源码摘要一致性,宿主可用
+  它决定要不要重建) / `smoke`(只对现有 dist 冒烟)。
+- 宿主只提供配置:package.json 里的调用参数 + 一份匹配自己信封的
+  `testdata/smoke-snapshot.json` + `--smoke-expect` 期望文本。
+- 三个消费方:subapi、脚手架模板、`example/`(dogfood——改管线后先跑
+  `make -C example web-build` 验证)。
+
 ## 已评估过的取舍(不要重新发明,也不要无理由推翻)
 
 - 非阻塞导航 + 占位数据 + 路由映射骨架:选定的 UX 模型。曾试过全阻塞
