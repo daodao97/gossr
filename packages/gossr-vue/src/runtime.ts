@@ -117,6 +117,7 @@ export function createApplicationRuntime<PageData>(
         appId: definition.appId,
         router,
         navigation: managedNavigation,
+        publicNavigation: navigation,
         state: clientNavigation,
         frameworkDisposers,
       })
@@ -325,6 +326,7 @@ function createPublicNavigation<PageData>(
     ready,
     loading: navigation.loading,
     error: navigation.error,
+    clearCached: navigation.clearCached,
     async refresh() {
       if (platform !== 'client' || !clientState || clientState.pendingRoutes > 0)
         return false
@@ -359,6 +361,7 @@ function installClientNavigationObservers<PageData>(options: {
   appId: string
   router: Router
   navigation: ManagedNavigationCoordinator<PageData>
+  publicNavigation: NavigationCoordinator<PageData>
   state: ClientNavigationState
   frameworkDisposers: Array<() => void>
 }) {
@@ -366,9 +369,18 @@ function installClientNavigationObservers<PageData>(options: {
     appId,
     router,
     navigation,
+    publicNavigation,
     state,
     frameworkDisposers,
   } = options
+
+  // 缓存命中的提交先展示上次的文档,随即走公开 refresh 重验证:
+  // 新鲜数据无感替换;服务端已改判(如登出后的重定向)则由 refresh
+  // 的正常通道处理(路由替换/整页兜底)。
+  const revalidateIfServedFromCache = () => {
+    if (navigation.consumeRevalidation())
+      void publicNavigation.refresh()
+  }
 
   frameworkDisposers.push(router.onError((error, to) => {
     const documentURL = safeDocumentURL(to.fullPath)
@@ -415,6 +427,8 @@ function installClientNavigationObservers<PageData>(options: {
         releasePendingRoute(state)
         if (!navigation.commit(prepared.documentURL))
           state.fallback(to.fullPath)
+        else
+          revalidateIfServedFromCache()
       }
       else {
         // Non-blocking navigation: the route is already committed; settle the
@@ -433,6 +447,8 @@ function installClientNavigationObservers<PageData>(options: {
           if (preparation.kind === 'ready') {
             if (!navigation.commit(prepared.documentURL))
               state.fallback(to.fullPath)
+            else
+              revalidateIfServedFromCache()
             return
           }
           if (preparation.kind === 'redirect') {

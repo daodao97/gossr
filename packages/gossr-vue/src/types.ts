@@ -38,6 +38,13 @@ export interface NavigationCoordinator<PageData> {
   loading: Readonly<Ref<boolean>>
   error: Readonly<Ref<Error | null>>
   refresh: () => Promise<boolean>
+  /**
+   * Drops the committed-page cache used for instant back-navigation.
+   * Hosts MUST call this when the signed-in identity changes (login,
+   * logout, account switch) so no page from the previous session can be
+   * served, even transiently.
+   */
+  clearCached: () => void
 }
 
 export interface GossrSetupContext<PageData> {

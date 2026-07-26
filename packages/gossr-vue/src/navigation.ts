@@ -23,6 +23,7 @@ export type NavigationFetcher = (
 interface StagedDocument<PageData> extends ParsedPageData<PageData> {
   id: number
   targetURL: string
+  fromCache?: boolean
 }
 
 interface ActiveNavigation {
@@ -47,9 +48,16 @@ export interface ManagedNavigationCoordinator<PageData> {
   prepare: (url: string, options?: { force?: boolean }) => Promise<NavigationPreparation>
   commit: (url: string) => boolean
   refresh: (url: string) => Promise<NavigationPreparation>
+  /** True exactly once after a commit served from the page cache. */
+  consumeRevalidation: () => boolean
+  clearCached: () => void
   cancelRoute: () => void
   dispose: () => void
 }
+
+// 已提交文档的 URL 级缓存上限。缓存只为消除"回到访问过的页面出骨架",
+// 命中后总是后台重验证,所以上限只是内存兜底,不是新鲜度参数。
+const cachedPageLimit = 20
 
 export function createNavigationCoordinator<PageData>(
   options: NavigationOptions<PageData>,
@@ -59,9 +67,26 @@ export function createNavigationCoordinator<PageData>(
   const loading = shallowRef(false)
   const error = shallowRef<Error | null>(null)
   const staged = shallowRef<StagedDocument<PageData>>()
+  const cachedPages = new Map<string, ParsedPageData<PageData>>()
   let active: ActiveNavigation | undefined
   let sequence = 0
   let disposed = false
+  let revalidationPending = false
+
+  if (options.initial)
+    rememberPage(options.initial)
+
+  function rememberPage(parsed: ParsedPageData<PageData>) {
+    if (!options.fetcher)
+      return
+    cachedPages.delete(parsed.url)
+    cachedPages.set(parsed.url, parsed)
+    if (cachedPages.size > cachedPageLimit) {
+      const oldest = cachedPages.keys().next().value
+      if (oldest !== undefined)
+        cachedPages.delete(oldest)
+    }
+  }
 
   function prepare(
     rawURL: string,
@@ -113,6 +138,22 @@ export function createNavigationCoordinator<PageData>(
         data: current.value,
       }
       return Promise.resolve({ kind: 'ready' })
+    }
+
+    // 命中缓存的页面立即就绪(回到访问过的页面不出骨架),提交后由
+    // runtime 层触发一次公开 refresh 做后台重验证:新鲜文档无感替换,
+    // 服务端裁决变成重定向/错误时走正常的路由替换或整页兜底。
+    if (kind === 'route') {
+      const remembered = options.fetcher ? cachedPages.get(url) : undefined
+      if (remembered) {
+        staged.value = {
+          id,
+          targetURL: url,
+          fromCache: true,
+          ...remembered,
+        }
+        return Promise.resolve({ kind: 'ready' })
+      }
     }
 
     if (!options.fetcher) {
@@ -218,7 +259,20 @@ export function createNavigationCoordinator<PageData>(
     currentURL.value = candidate.url
     staged.value = undefined
     error.value = null
+    rememberPage({ data: candidate.data, url: candidate.url })
+    if (candidate.fromCache)
+      revalidationPending = true
     return true
+  }
+
+  function consumeRevalidation() {
+    const pending = revalidationPending
+    revalidationPending = false
+    return pending
+  }
+
+  function clearCached() {
+    cachedPages.clear()
   }
 
   async function refresh(rawURL: string) {
@@ -252,6 +306,8 @@ export function createNavigationCoordinator<PageData>(
     active?.controller.abort()
     active = undefined
     staged.value = undefined
+    cachedPages.clear()
+    revalidationPending = false
     loading.value = false
   }
 
@@ -263,6 +319,8 @@ export function createNavigationCoordinator<PageData>(
     prepare,
     commit,
     refresh,
+    consumeRevalidation,
+    clearCached,
     cancelRoute,
     dispose,
   }
