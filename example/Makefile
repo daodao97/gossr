@@ -14,13 +14,13 @@ init-dist: ## 初始化 embed 所需的 dist 占位目录
 	@mkdir -p web/dist/client web/dist/server
 	@touch web/dist/client/.keep web/dist/server/.keep
 
-web-install: ## 安装前端依赖
+web-install: ## 安装前端依赖(pnpm workspace)
 	$(NPM) --prefix web install
 
 web-dev: ## 启动前端开发服务（127.0.0.1:3333）
 	$(NPM) --prefix web run dev
 
-web-build: ## 构建前端产物（dist/client + dist/server）
+web-build: ## 构建前端产物(gossr-build:双构建+体检+goja 冒烟+原子发布)
 	$(NPM) --prefix web run build
 
 dev: ## Go 开发模式（需先执行 make web-dev）

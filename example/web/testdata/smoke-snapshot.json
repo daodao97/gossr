@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "url": "/__gossr_build_smoke__",
+  "locale": "en",
+  "session": null,
+  "page": {
+    "kind": "not_found",
+    "message": "",
+    "generated_at": "2026-01-01T00:00:00Z"
+  }
+}
