@@ -5,6 +5,7 @@
   "type": "module",
   "sideEffects": false,
   "files": [
+    "bin",
     "dist",
     "README.md"
   ],
@@ -62,5 +63,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "bin": {
+    "gossr-build": "./bin/gossr-build.mjs"
   }
 }
