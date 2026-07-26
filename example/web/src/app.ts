@@ -1,7 +1,6 @@
 import { routes } from 'vue-router/auto-routes'
 
 import App from './App.vue'
-import { navigationKey } from '~/composables/usePageData'
 import { createLocaleTextContext, localeTextKey } from '~/composables/useLocaleText'
 import { defineGossrApp } from '@daodao97/gossr-vue'
 import { parsePageData } from '~/page-data'
@@ -15,8 +14,7 @@ export default defineGossrApp<PageData>({
     parse: parsePageData,
     url: pageData => pageData.url,
   },
-  setup({ app, router, navigation }) {
-    app.provide(navigationKey, navigation)
+  setup({ app, router }) {
     app.provide(localeTextKey, createLocaleTextContext(router))
   },
 })

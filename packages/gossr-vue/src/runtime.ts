@@ -27,6 +27,7 @@ import {
 import { createNavigationCoordinator, fetchNavigationOutcome } from './navigation.js'
 import type { ManagedNavigationCoordinator, NavigationPreparation } from './navigation.js'
 import { clearStaleClientRecovery, recoverStaleClientRoute } from './stale-client.js'
+import { navigationInjectionKey } from './use-navigation.js'
 import {
   canonicalNavigationURL,
   documentURLFromRouter,
@@ -123,6 +124,11 @@ export function createApplicationRuntime<PageData>(
       })
       installRestoredPageRevalidation(navigation, frameworkDisposers)
     }
+
+    app.provide(
+      navigationInjectionKey,
+      navigation as NavigationCoordinator<unknown>,
+    )
 
     let setupResult: unknown
     try {

@@ -3,17 +3,13 @@ import type {
   SessionPayload,
 } from '~/page-data'
 
-import { computed, inject } from 'vue'
-import type { ComputedRef, InjectionKey } from 'vue'
+import { computed } from 'vue'
+import type { ComputedRef } from 'vue'
+import { useNavigation as useGossrNavigation } from '@daodao97/gossr-vue'
 import type { NavigationCoordinator } from '@daodao97/gossr-vue'
 
-export const navigationKey: InjectionKey<NavigationCoordinator<PageData>> = Symbol('navigation')
-
 export function useNavigation(): NavigationCoordinator<PageData> {
-  const navigation = inject(navigationKey)
-  if (!navigation)
-    throw new Error('navigation is not provided')
-  return navigation
+  return useGossrNavigation<PageData>()
 }
 
 export function usePage(): ComputedRef<PageData['page'] | undefined> {
