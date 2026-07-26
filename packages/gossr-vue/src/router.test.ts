@@ -769,3 +769,88 @@ describe('bfcache restore revalidation', () => {
     fetchMock.mockRestore()
   })
 })
+
+describe('structured server errors stay in-app', () => {
+  beforeEach(() => {
+    window.history.replaceState({}, '', '/')
+    document.body.innerHTML = '<div id="app"></div>'
+  })
+
+  it('keeps the current page when navigation data returns a coded error', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      Response.json({
+        kind: 'error',
+        status: 504,
+        code: 'request_timeout',
+        message: 'page request timed out',
+      }),
+    )
+    const navigateDocument = vi.fn()
+    const routeComponent = defineComponent(() => () => h('div'))
+    const definition = defineGossrApp<{ url: string }>({
+      appId: 'router-coded-error-test',
+      root: defineComponent(() => () => h('main')),
+      routes: [
+        { path: '/', component: routeComponent },
+        { path: '/dashboard/usage_log', component: routeComponent },
+      ],
+      pageData: {
+        parse: value => value as { url: string },
+        url: pageDocument => pageDocument.url,
+      },
+    })
+    const runtime = createApplicationRuntime(definition, {
+      platform: 'client',
+      initial: {
+        data: { url: '/' },
+        url: '/',
+      },
+      hydrate: false,
+      navigateDocument,
+    })
+    await runtime.initialNavigation
+
+    await runtime.router.push('/dashboard/usage_log')
+    await vi.waitFor(() => {
+      expect(runtime.navigation.error.value).not.toBeNull()
+    })
+
+    // 不触发整页导航,上一页数据保持已提交状态。
+    expect(navigateDocument).not.toHaveBeenCalled()
+    expect(runtime.navigation.current.value).toEqual({ url: '/' })
+    expect(runtime.router.currentRoute.value.fullPath).toBe('/dashboard/usage_log')
+
+    runtime.dispose()
+    fetchMock.mockRestore()
+  })
+
+  it('a coded refresh error keeps the page without a browser navigation', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      Response.json({
+        kind: 'error',
+        status: 503,
+        code: 'service_unavailable',
+        message: 'temporarily unavailable',
+      }),
+    )
+    const navigateDocument = vi.fn()
+    const runtime = createApplicationRuntime(testDefinition(), {
+      platform: 'client',
+      initial: {
+        data: { url: '/' },
+        url: '/',
+      },
+      hydrate: false,
+      navigateDocument,
+    })
+    await runtime.initialNavigation
+
+    expect(await runtime.navigation.refresh()).toBe(false)
+    expect(navigateDocument).not.toHaveBeenCalled()
+    expect(runtime.navigation.current.value).toEqual({ url: '/' })
+    expect(runtime.navigation.error.value).not.toBeNull()
+
+    runtime.dispose()
+    fetchMock.mockRestore()
+  })
+})

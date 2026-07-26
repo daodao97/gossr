@@ -350,7 +350,8 @@ function createPublicNavigation<PageData>(
           return false
         }
       }
-      if (result.kind === 'error')
+      // 同上:服务端结构化报错不升级为整页导航,保留当前页面与错误提示。
+      if (result.kind === 'error' && result.code === undefined)
         clientState.fallback(documentURL)
       return false
     },
@@ -457,6 +458,12 @@ function installClientNavigationObservers<PageData>(options: {
             })
             return
           }
+          // 服务端结构化报错(带 code,如超时/解析失败于服务端):整页导航
+          // 只会把同一个失败放大成裸错误页。留在应用内——error ref 已置位,
+          // 宿主的错误提示可见,站内切换仍然可用。只有无 code 的失败
+          // (解析异常/网络中断,可能是版本偏差)才走整页导航自愈。
+          if (preparation.kind === 'error' && preparation.code !== undefined)
+            return
           state.fallback(prepared.documentURL)
         })
       }
