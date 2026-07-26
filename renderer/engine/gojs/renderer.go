@@ -198,3 +198,11 @@ func optionalResultString(value goja.Value, name string) (string, error) {
 	return exported, nil
 }
 
+
+// PoolStats 暴露 runtime 池的运行指标,实现 renderer.PoolStatsProvider。
+func (r *Renderer) PoolStats() renderer.PoolStats {
+	if r == nil || r.pool == nil {
+		return renderer.PoolStats{}
+	}
+	return r.pool.Stats()
+}

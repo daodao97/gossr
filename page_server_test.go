@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/fstest"
@@ -28,6 +29,7 @@ func typedTestDist() fstest.MapFS {
 type typedTestOptions struct {
 	SiteOrigin           string
 	ExcludedPathPrefixes []string
+	OnPageEvent          func(PageEvent)
 }
 
 func mountTypedTestSSR(
@@ -52,6 +54,7 @@ func mountTypedTestSSR(
 		RendererFactory: func(string) renderer.Renderer {
 			return rendererFn
 		},
+		OnPageEvent: options.OnPageEvent,
 	})
 	if err != nil {
 		t.Fatalf("create typed SSR runtime: %v", err)
@@ -538,5 +541,77 @@ func TestDocumentHEADSkipsRendering(t *testing.T) {
 	}
 	if rendered != 0 {
 		t.Fatalf("HEAD triggered %d SSR renders, want 0", rendered)
+	}
+}
+
+func TestOnPageEventReportsDocumentAndNavigationOutcomes(t *testing.T) {
+	var mu sync.Mutex
+	var events []PageEvent
+	router := gin.New()
+	mountTypedTestSSR(
+		t,
+		router,
+		func(_ context.Context, request PageRequest) (PageResult, error) {
+			switch request.URL.Path {
+			case "/go":
+				return PageResult{Redirect: &Redirect{Status: http.StatusSeeOther, Location: "/login"}}, nil
+			case "/boom":
+				return PageResult{}, errors.New("resolver exploded")
+			default:
+				return PageResult{Payload: mapPayload{"ok": true}}, nil
+			}
+		},
+		testRenderer(func(_ context.Context, urlPath string, _ map[string]any) (renderer.Result, error) {
+			if urlPath == "/render-fail" {
+				return renderer.Result{}, errors.New("render failed")
+			}
+			return renderer.Result{HTML: "<main>ok</main>"}, nil
+		}),
+		func(options *typedTestOptions) {
+			options.OnPageEvent = func(event PageEvent) {
+				mu.Lock()
+				events = append(events, event)
+				mu.Unlock()
+				// 宿主回调 panic 不得影响请求处理。
+				panic("observer must not break requests")
+			}
+		},
+	)
+
+	htmlRequest(router, http.MethodGet, "/", nil)
+	htmlRequest(router, http.MethodGet, "/go", nil)
+	htmlRequest(router, http.MethodGet, "/boom", nil)
+	htmlRequest(router, http.MethodGet, "/render-fail", nil)
+	navigationRequest(router, "/", nil)
+	navigationRequest(router, "/go", nil)
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []struct {
+		kind, outcome string
+		status        int
+		rendered      bool
+	}{
+		{kind: "document", outcome: "ok", status: http.StatusOK, rendered: true},
+		{kind: "document", outcome: "redirect", status: http.StatusSeeOther},
+		{kind: "document", outcome: "resolver_error", status: http.StatusInternalServerError},
+		{kind: "document", outcome: "fallback", status: http.StatusOK, rendered: true},
+		{kind: "navigation", outcome: "ok", status: http.StatusOK},
+		{kind: "navigation", outcome: "redirect", status: http.StatusOK},
+	}
+	if len(events) != len(want) {
+		t.Fatalf("events=%d, want %d: %#v", len(events), len(want), events)
+	}
+	for index, expected := range want {
+		got := events[index]
+		if got.Kind != expected.kind || got.Outcome != expected.outcome || got.Status != expected.status {
+			t.Fatalf("event[%d]=%#v, want %+v", index, got, expected)
+		}
+		if got.Duration <= 0 {
+			t.Fatalf("event[%d] has no duration: %#v", index, got)
+		}
+		if expected.rendered != (got.Render > 0) {
+			t.Fatalf("event[%d] render duration=%v, want rendered=%t", index, got.Render, expected.rendered)
+		}
 	}
 }

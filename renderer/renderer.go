@@ -34,4 +34,18 @@ type Result struct {
 	Head string
 }
 
+// PoolStats 是渲染器运行时池的一次快照。Created/Discarded 是进程生命周期
+// 内的单调计数;discard 率升高通常意味着渲染中断(超时/取消)频繁。
+type PoolStats struct {
+	Size      int
+	Idle      int
+	Created   uint64
+	Discarded uint64
+}
+
+// PoolStatsProvider 由池化渲染器可选实现,供宿主导出运行指标。
+type PoolStatsProvider interface {
+	PoolStats() PoolStats
+}
+
 const DefaultSSRScriptName = "server.js"

@@ -3,6 +3,7 @@ package gojs
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/dop251/goja"
 )
@@ -134,5 +135,38 @@ func TestRuntimePoolCloseStopsGetAndDropsLateReturns(t *testing.T) {
 	defer pool.mu.Unlock()
 	if pool.currentSize != 0 {
 		t.Fatalf("late Put leaked capacity: currentSize=%d", pool.currentSize)
+	}
+}
+
+func TestRendererPoolStatsTrackCreationAndDiscards(t *testing.T) {
+	t.Setenv("GOJA_POOL_SIZE", "1")
+	t.Setenv("GOJA_RUNTIME_MAX_RENDERS", "0")
+	r := NewRenderer(`
+globalThis.__GOSSR_RENDER_ABI__ = 2;
+globalThis.ssrRender = function(input) {
+  if (input.snapshot.spin) {
+    for (;;) {}
+  }
+  return { html: "ok" };
+};
+`)
+	t.Cleanup(r.pool.Close)
+
+	if _, err := r.Render(context.Background(), "/", nil); err != nil {
+		t.Fatalf("render failed: %v", err)
+	}
+	stats := r.PoolStats()
+	if stats.Created != 1 || stats.Discarded != 0 || stats.Size != 1 || stats.Idle != 1 {
+		t.Fatalf("unexpected stats after clean render: %#v", stats)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if _, err := r.Render(ctx, "/spin", map[string]any{"spin": true}); err == nil {
+		t.Fatal("expected interrupted render to fail")
+	}
+	stats = r.PoolStats()
+	if stats.Discarded != 1 || stats.Size != 0 {
+		t.Fatalf("interrupt did not register a discard: %#v", stats)
 	}
 }

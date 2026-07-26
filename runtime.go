@@ -51,6 +51,26 @@ type Config struct {
 	MaxConcurrentPages int
 	// RenderTimeout optionally adds a tighter deadline around only Render.
 	RenderTimeout time.Duration
+
+	// OnPageEvent, when set, receives one event per handled document or
+	// navigation request. It runs synchronously on the request path and must
+	// return quickly; panics are swallowed.
+	OnPageEvent func(PageEvent)
+}
+
+// PageEvent describes one handled page request, for host-side metrics.
+type PageEvent struct {
+	// Kind is "document" or "navigation".
+	Kind string
+	// Outcome is one of "ok", "redirect", "fallback", "resolver_error",
+	// "timeout", "invalid_target", "unavailable".
+	Outcome string
+	// Status is the HTTP status written to the response.
+	Status int
+	// Duration covers queueing, resolver work, and rendering.
+	Duration time.Duration
+	// Render is the SSR render duration; zero when nothing was rendered.
+	Render time.Duration
 }
 
 // GinOptions supplies the host-owned typed page boundary at mount time.
@@ -100,6 +120,30 @@ type Runtime struct {
 	renderTimeout   time.Duration
 	pageTimeout     time.Duration
 	maxConcurrency  int
+	onPageEvent     func(PageEvent)
+}
+
+func (r *Runtime) emitPageEvent(event PageEvent) {
+	if r == nil || r.onPageEvent == nil {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
+	r.onPageEvent(event)
+}
+
+// RendererPoolStats 返回渲染器池的运行快照;渲染器未实现
+// renderer.PoolStatsProvider(如开发模式或自定义引擎)时 ok=false。
+func (r *Runtime) RendererPoolStats() (renderer.PoolStats, bool) {
+	if r == nil || r.renderer == nil {
+		return renderer.PoolStats{}, false
+	}
+	provider, ok := r.renderer.(renderer.PoolStatsProvider)
+	if !ok {
+		return renderer.PoolStats{}, false
+	}
+	return provider.PoolStats(), true
 }
 
 // New prepares a Runtime without mutating a Gin engine.
@@ -133,6 +177,7 @@ func newRuntime(config Config, compatibilityUnlimited bool) (_ *Runtime, err err
 		renderTimeout:  renderTimeout,
 		pageTimeout:    pageTimeout,
 		maxConcurrency: concurrency,
+		onPageEvent:    config.OnPageEvent,
 	}
 	defer func() {
 		if err == nil {
@@ -352,8 +397,17 @@ func (r *Runtime) productionNoRoute(
 			return
 		}
 
+		start := time.Now()
+		event := &PageEvent{Kind: "document", Outcome: "ok"}
+		defer func() {
+			event.Duration = time.Since(start)
+			event.Status = c.Writer.Status()
+			r.emitPageEvent(*event)
+		}()
+
 		requestContext, release, err := r.beginRequest(c.Request.Context())
 		if err != nil {
+			event.Outcome = "unavailable"
 			setHTMLNoCacheHeaders(c)
 			c.Status(http.StatusServiceUnavailable)
 			return
@@ -369,6 +423,7 @@ func (r *Runtime) productionNoRoute(
 			resolver,
 			r.siteOrigin,
 			r.renderTimeout,
+			event,
 		)
 	}
 }
@@ -394,8 +449,17 @@ func (r *Runtime) developmentNoRoute(excludedPrefixes []string) gin.HandlerFunc 
 
 func (r *Runtime) navigationHandler(resolver PageResolver) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		start := time.Now()
+		event := &PageEvent{Kind: "navigation", Outcome: "ok"}
+		defer func() {
+			event.Duration = time.Since(start)
+			event.Status = c.Writer.Status()
+			r.emitPageEvent(*event)
+		}()
+
 		requestContext, releaseRuntime, err := r.beginRequest(c.Request.Context())
 		if err != nil {
+			event.Outcome = "unavailable"
 			writeNavigationError(
 				c,
 				http.StatusServiceUnavailable,
@@ -409,6 +473,7 @@ func (r *Runtime) navigationHandler(resolver PageResolver) gin.HandlerFunc {
 
 		pageContext, releaseAdmission, err := r.admission.enter(c.Request.Context())
 		if err != nil {
+			event.Outcome = "timeout"
 			status := pageRequestErrorStatus(err)
 			writeNavigationError(c, status, "request_timeout", "page request timed out")
 			return
@@ -418,6 +483,7 @@ func (r *Runtime) navigationHandler(resolver PageResolver) gin.HandlerFunc {
 
 		request, err := newNavigationPageRequest(c.Request, "")
 		if err != nil {
+			event.Outcome = "invalid_target"
 			writeNavigationError(c, http.StatusBadRequest, "invalid_target", "invalid navigation target")
 			return
 		}
@@ -432,9 +498,11 @@ func (r *Runtime) navigationHandler(resolver PageResolver) gin.HandlerFunc {
 			status := pageRequestErrorStatus(err)
 			code := "resolve_failed"
 			message := "page resolution failed"
+			event.Outcome = "resolver_error"
 			if status == http.StatusGatewayTimeout || status == http.StatusRequestTimeout {
 				code = "request_timeout"
 				message = "page request timed out"
+				event.Outcome = "timeout"
 			}
 			writeNavigationError(c, status, code, message)
 			return
@@ -443,6 +511,7 @@ func (r *Runtime) navigationHandler(resolver PageResolver) gin.HandlerFunc {
 		setPageCacheHeaders(c, resolved.Cache)
 
 		if resolved.Redirect != nil {
+			event.Outcome = "redirect"
 			c.JSON(http.StatusOK, navigationRedirectOutcome{
 				Kind:     "redirect",
 				Status:   resolved.Redirect.Status,

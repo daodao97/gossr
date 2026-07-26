@@ -72,9 +72,11 @@ func handlePageDocumentWithRenderTimeout(
 	resolver PageResolver,
 	configuredSiteOrigin string,
 	renderTimeout time.Duration,
+	event *PageEvent,
 ) {
 	requestContext, release, err := admission.enter(c.Request.Context())
 	if err != nil {
+		event.Outcome = "timeout"
 		setHTMLNoCacheHeaders(c)
 		c.Status(pageRequestErrorStatus(err))
 		return
@@ -84,6 +86,7 @@ func handlePageDocumentWithRenderTimeout(
 
 	pageRequest, err := newDocumentPageRequest(c.Request)
 	if err != nil {
+		event.Outcome = "invalid_target"
 		setHTMLNoCacheHeaders(c)
 		c.Status(http.StatusBadRequest)
 		return
@@ -96,6 +99,11 @@ func handlePageDocumentWithRenderTimeout(
 	resolved, payload, err := resolvePage(c.Request.Context(), resolver, pageRequest)
 	if err != nil {
 		log.Printf("resolve page failed path=%q err=%q", c.Request.URL.Path, err)
+		event.Outcome = "resolver_error"
+		if status := pageRequestErrorStatus(err); status == http.StatusGatewayTimeout ||
+			status == http.StatusRequestTimeout {
+			event.Outcome = "timeout"
+		}
 		setHTMLNoCacheHeaders(c)
 		c.Status(pageRequestErrorStatus(err))
 		return
@@ -104,6 +112,7 @@ func handlePageDocumentWithRenderTimeout(
 	setPageCacheHeaders(c, resolved.Cache)
 
 	if resolved.Redirect != nil {
+		event.Outcome = "redirect"
 		writePageRedirect(c, *resolved.Redirect)
 		return
 	}
@@ -117,6 +126,7 @@ func handlePageDocumentWithRenderTimeout(
 
 	locale := explicitLocaleFromPath(pageRequest.URL.Path)
 	reqID := fmt.Sprintf("%d", time.Now().UnixNano())
+	renderStart := time.Now()
 	rendered, renderErr := renderWithTimeout(
 		c.Request.Context(),
 		ssr,
@@ -124,8 +134,10 @@ func handlePageDocumentWithRenderTimeout(
 		payload,
 		renderTimeout,
 	)
+	event.Render = time.Since(renderStart)
 	if renderErr != nil {
 		log.Printf("ssr render failed id=%s path=%q err=%q", reqID, c.Request.URL.Path, renderErr)
+		event.Outcome = "fallback"
 		writeHTMLDocument(c, resolved.Status, page.renderFallback(payload, locale, reqID))
 		return
 	}
@@ -135,12 +147,14 @@ func handlePageDocumentWithRenderTimeout(
 	// conservative: a false positive merely downgrades to the CSR fallback.
 	if strings.Contains(rendered.HTML, bootElementID) || strings.Contains(rendered.Head, bootElementID) {
 		log.Printf("ssr render output contains %s id=%s path=%q", bootElementID, reqID, c.Request.URL.Path)
+		event.Outcome = "fallback"
 		writeHTMLDocument(c, http.StatusInternalServerError, page.renderFallback(nil, locale, reqID))
 		return
 	}
 	boot, err := bootScript(payload)
 	if err != nil {
 		log.Printf("inject SSR boot data failed id=%s path=%q err=%q", reqID, c.Request.URL.Path, err)
+		event.Outcome = "fallback"
 		writeHTMLDocument(c, http.StatusInternalServerError, page.renderFallback(nil, locale, reqID))
 		return
 	}

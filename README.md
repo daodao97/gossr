@@ -304,6 +304,18 @@ runtime, err := gossr.New(gossr.Config{
   - 完整的 `__GOSSR_BOOT__` 文档数据（客户端可无 SSR 冷启动）
 - gossr 不注册邀请、登录等业务路由。
 
+### 可观测性
+
+gossr 不绑定任何指标系统,暴露两个零依赖的钩子由宿主接入自己的栈:
+
+- `Config.OnPageEvent func(PageEvent)`:每个 document/navigation 请求结束时
+  同步回调一次,携带 `Kind`/`Outcome`/`Status`/`Duration`/`Render`(渲染耗时)。
+  回调必须快速返回;panic 会被吞掉,不影响请求。用它导出渲染 p99、
+  fallback 率、resolver 错误率、超时率。
+- `Runtime.RendererPoolStats()`:渲染器池快照(容量/空闲/累计创建/累计丢弃),
+  渲染器实现 `renderer.PoolStatsProvider` 时可用(内置 gojs 已实现)。
+  discard 率升高通常意味着渲染中断(超时/取消)频繁。
+
 ## 页面数据
 
 ### SSRPayload

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/daodao97/gossr/renderer"
 	"github.com/dop251/goja"
 )
 
@@ -34,6 +35,8 @@ type runtimePool struct {
 	idle        chan *runtimeContainer
 	maxSize     int
 	currentSize int
+	created     uint64
+	discarded   uint64
 	closed      bool
 	done        chan struct{}
 }
@@ -87,7 +90,11 @@ func (p *runtimePool) createReserved() (container *runtimeContainer) {
 			panic(recovered)
 		}
 	}()
-	return p.createRuntime()
+	container = p.createRuntime()
+	p.mu.Lock()
+	p.created++
+	p.mu.Unlock()
+	return container
 }
 
 func parseRuntimeMaxUses(defaultMaxUses int) int {
@@ -314,7 +321,20 @@ func (p *runtimePool) Discard(container *runtimeContainer) {
 	if p.currentSize > 0 {
 		p.currentSize--
 	}
+	p.discarded++
 	p.mu.Unlock()
+}
+
+// Stats 返回池的一次快照。
+func (p *runtimePool) Stats() renderer.PoolStats {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return renderer.PoolStats{
+		Size:      p.currentSize,
+		Idle:      len(p.idle),
+		Created:   p.created,
+		Discarded: p.discarded,
+	}
 }
 
 // Close 关闭池并清空空闲 runtime；可安全重复调用。
