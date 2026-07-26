@@ -700,8 +700,14 @@ func TestStructuralSSRTemplateMutationIgnoresScriptText(t *testing.T) {
 	if strings.Contains(fallback, `data-ssr`) {
 		t.Fatalf("fallback must not mark the app element for hydration: %s", fallback)
 	}
-	if !strings.Contains(fallback, `<script id="__GOSSR_BOOT__" type="application/json">{}</script>`) {
-		t.Fatalf("fallback has no boot element: %s", fallback)
+	// nil payload = 没有可信数据,不注入 boot,客户端冷启动自行拉取。
+	if strings.Contains(fallback, `<script id="__GOSSR_BOOT__" type="application/json">`) {
+		t.Fatalf("fallback with nil payload must not carry boot data: %s", fallback)
+	}
+
+	withBoot := page.renderFallback(map[string]any{"ok": true}, "", "")
+	if !strings.Contains(withBoot, `<script id="__GOSSR_BOOT__" type="application/json">{"ok":true}</script>`) {
+		t.Fatalf("fallback with payload lost boot data: %s", withBoot)
 	}
 }
 

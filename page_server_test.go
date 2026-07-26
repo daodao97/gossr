@@ -615,3 +615,35 @@ func TestOnPageEventReportsDocumentAndNavigationOutcomes(t *testing.T) {
 		}
 	}
 }
+
+func TestDocumentResolverFailureServesCSRShell(t *testing.T) {
+	router := gin.New()
+	mountTypedTestSSR(
+		t,
+		router,
+		func(context.Context, PageRequest) (PageResult, error) {
+			return PageResult{}, context.DeadlineExceeded
+		},
+		testRenderer(func(context.Context, string, map[string]any) (renderer.Result, error) {
+			t.Fatal("renderer must not run when the resolver fails")
+			return renderer.Result{}, nil
+		}),
+		nil,
+	)
+
+	response := htmlRequest(router, http.MethodGet, "/dashboard/usage_log", nil)
+	if response.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status=%d, want 504", response.Code)
+	}
+	body := response.Body.String()
+	// 白屏是不可接受的失败形态:超时也要下发可自愈的 CSR 壳。
+	if !strings.Contains(body, `id="app"`) ||
+		strings.Contains(body, `data-ssr`) ||
+		strings.Contains(body, `<script id="__GOSSR_BOOT__" type="application/json">`) ||
+		!strings.Contains(body, `name="ssr-error-id"`) {
+		t.Fatalf("resolver failure did not serve the CSR shell: %s", body)
+	}
+	if got := response.Header().Get("Cache-Control"); !strings.Contains(got, "no-store") {
+		t.Fatalf("shell must not be cacheable: %q", got)
+	}
+}

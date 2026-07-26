@@ -299,9 +299,11 @@ runtime, err := gossr.New(gossr.Config{
   成功或抛出异常），模块级缓存会泄漏到其他用户的请求中。gossr-vue 生成的
   bundle 天然满足；宿主引入的第三方依赖需自行确认。建议像 subapi 一样用
   "同一 runtime 渲染两次结果必须一致"的测试守住这条线。
-- 渲染失败或超时时，会返回 fallback 页面，并注入：
+- 渲染失败、resolver 失败或超时时,都会返回可自愈的 CSR fallback 页面(不会出现空 body 白屏),并注入:
   - `meta[name="ssr-error-id"]`
-  - 完整的 `__GOSSR_BOOT__` 文档数据（客户端可无 SSR 冷启动）
+  - 渲染失败时注入完整的 `__GOSSR_BOOT__` 文档数据(客户端可无 SSR 冷启动);
+    resolver 失败/超时时无可信数据,不注入 boot,客户端启动后自动拉取
+    `/_ssr/data` 重试
 - gossr 不注册邀请、登录等业务路由。
 
 ### 可观测性

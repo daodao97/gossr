@@ -74,11 +74,18 @@ func handlePageDocumentWithRenderTimeout(
 	renderTimeout time.Duration,
 	event *PageEvent,
 ) {
+	// reqID 提前生成:所有失败分支下发的兜底壳都带 ssr-error-id,便于关联日志。
+	reqID := fmt.Sprintf("%d", time.Now().UnixNano())
+
 	requestContext, release, err := admission.enter(c.Request.Context())
 	if err != nil {
 		event.Outcome = "timeout"
 		setHTMLNoCacheHeaders(c)
-		c.Status(pageRequestErrorStatus(err))
+		writeHTMLDocument(
+			c,
+			pageRequestErrorStatus(err),
+			page.renderFallback(nil, explicitLocaleFromPath(c.Request.URL.Path), reqID),
+		)
 		return
 	}
 	defer release()
@@ -95,6 +102,7 @@ func handlePageDocumentWithRenderTimeout(
 	if pageRequest.SiteOrigin == "" {
 		pageRequest.SiteOrigin = requestOrigin(c.Request)
 	}
+	locale := explicitLocaleFromPath(pageRequest.URL.Path)
 
 	resolved, payload, err := resolvePage(c.Request.Context(), resolver, pageRequest)
 	if err != nil {
@@ -104,8 +112,11 @@ func handlePageDocumentWithRenderTimeout(
 			status == http.StatusRequestTimeout {
 			event.Outcome = "timeout"
 		}
+		// 下发无 boot 数据的 CSR 壳而不是空 body:客户端启动后会自动拉
+		// /_ssr/data——服务端已恢复则页面照常出现,仍失败则落到应用内
+		// 错误提示。任何失败路径都不该以白屏收场。
 		setHTMLNoCacheHeaders(c)
-		c.Status(pageRequestErrorStatus(err))
+		writeHTMLDocument(c, pageRequestErrorStatus(err), page.renderFallback(nil, locale, reqID))
 		return
 	}
 	writePageCookies(c, resolved.Cookies)
@@ -124,8 +135,6 @@ func handlePageDocumentWithRenderTimeout(
 		return
 	}
 
-	locale := explicitLocaleFromPath(pageRequest.URL.Path)
-	reqID := fmt.Sprintf("%d", time.Now().UnixNano())
 	renderStart := time.Now()
 	rendered, renderErr := renderWithTimeout(
 		c.Request.Context(),
@@ -337,9 +346,13 @@ func (t *compiledTemplate) renderFallback(payload map[string]any, locale string,
 	if strings.TrimSpace(reqID) != "" {
 		meta = fmt.Sprintf(`<meta name="ssr-error-id" content="%s">`, template.HTMLEscapeString(reqID))
 	}
-	boot, err := bootScript(payload)
-	if err != nil {
-		boot = ""
+	// payload 为 nil 表示没有可信的页面数据(resolver 失败/注入失败):
+	// 不注入 boot,让客户端冷启动并自行拉取导航数据。
+	boot := ""
+	if payload != nil {
+		if script, err := bootScript(payload); err == nil {
+			boot = script
+		}
 	}
 	return pre + meta + boot + t.headToMarkerCSR + t.postMarker
 }
