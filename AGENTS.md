@@ -106,8 +106,11 @@ discard 计数突增 = 渲染中断频繁;渲染 p99 持续偏高才考虑渲染
   `PageResolver`/`PageResult`/URL 校验;`payload.go`:`ObjectPayload`;
   `admission.go`:并发闸;`locales/`:多语言能力面。
 - `renderer/`:接口与 `PoolStats`;`engine/gojs`:内置渲染器与 runtime 池。
-- `packages/gossr-vue/`:Vue 运行时(导航协调器、信封 codec、client/server
-  入口、Vite preset);`cmd/gossr-init`:脚手架;`example/`:全功能示例。
+- `packages/gossr-vue/`:Vue 运行时(导航协调器、信封 codec、标准访问器、
+  client/server 入口、Vite preset)与 `bin/gossr-build` 构建管线(staging、
+  manifest 摘要、产物体检、goja 冒烟、原子发布);`cmd/gossr-smoke`:
+  冒烟命令(宿主经 `go run` 以 go.mod 锁定版本调用);`cmd/gossr-init`:
+  脚手架;`example/`:全功能示例。
 
 ```bash
 go build ./... && go test ./... && go vet ./...
