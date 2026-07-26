@@ -78,9 +78,7 @@ func addSessionTokenCookie(req *http.Request, token string) {
 	req.AddCookie(&http.Cookie{Name: "session_token", Value: token})
 }
 
-func TestRenderWithTimeoutReleasesSemaphoreAfterTimeout(t *testing.T) {
-	sem := make(chan struct{}, 1)
-
+func TestRenderWithTimeoutCancelsSlowRender(t *testing.T) {
 	slowRenderer := testRenderer(func(ctx context.Context, _ string, _ map[string]any) (renderer.Result, error) {
 		select {
 		case <-time.After(80 * time.Millisecond):
@@ -90,47 +88,21 @@ func TestRenderWithTimeoutReleasesSemaphoreAfterTimeout(t *testing.T) {
 		}
 	})
 
-	_, err := renderWithTimeout(context.Background(), slowRenderer, "/", nil, 15*time.Millisecond, sem)
+	_, err := renderWithTimeout(context.Background(), slowRenderer, "/", nil, 15*time.Millisecond)
 	if err == nil || !strings.Contains(err.Error(), "render timeout") {
 		t.Fatalf("expected timeout error, got %v", err)
 	}
-
-	time.Sleep(120 * time.Millisecond)
 
 	fastRenderer := testRenderer(func(_ context.Context, _ string, _ map[string]any) (renderer.Result, error) {
 		return renderer.Result{HTML: "ok"}, nil
 	})
 
-	result, err := renderWithTimeout(context.Background(), fastRenderer, "/", nil, 200*time.Millisecond, sem)
+	result, err := renderWithTimeout(context.Background(), fastRenderer, "/", nil, 200*time.Millisecond)
 	if err != nil {
-		t.Fatalf("expected render to succeed after timeout, got %v", err)
+		t.Fatalf("expected render to succeed, got %v", err)
 	}
 	if result.HTML != "ok" {
 		t.Fatalf("unexpected html result: %q", result.HTML)
-	}
-}
-
-func TestRenderWithTimeoutDoesNotRunAfterSemaphoreWaitTimeout(t *testing.T) {
-	sem := make(chan struct{}, 1)
-	sem <- struct{}{}
-
-	called := make(chan struct{}, 1)
-	rendererFn := testRenderer(func(_ context.Context, _ string, _ map[string]any) (renderer.Result, error) {
-		called <- struct{}{}
-		return renderer.Result{HTML: "late"}, nil
-	})
-
-	_, err := renderWithTimeout(context.Background(), rendererFn, "/", nil, 20*time.Millisecond, sem)
-	if err == nil || !strings.Contains(err.Error(), "render timeout") {
-		t.Fatalf("expected timeout error while waiting semaphore, got %v", err)
-	}
-
-	<-sem
-
-	select {
-	case <-called:
-		t.Fatalf("renderer should not run after timeout while waiting semaphore")
-	case <-time.After(60 * time.Millisecond):
 	}
 }
 
@@ -206,10 +178,16 @@ func TestRequestOrigin(t *testing.T) {
 	})
 }
 
-func TestInjectHeadContentReplacesTemplateTitle(t *testing.T) {
-	html := `<!doctype html><html><head><title>default</title><meta charset="utf-8"></head><body></body></html>`
+func TestRenderDocumentReplacesTemplateTitle(t *testing.T) {
+	html := `<!doctype html><html><head><title>default</title><meta charset="utf-8"></head>` +
+		`<body><div id="app"><!--app-html--></div></body></html>`
+	page, err := compileIndexTemplate(html)
+	if err != nil {
+		t.Fatalf("compileIndexTemplate: %v", err)
+	}
+
 	head := `<title>route title</title><meta name="description" content="route">`
-	result := injectHeadContent(html, head)
+	result := page.renderDocument(renderer.Result{HTML: "<main>x</main>", Head: head}, "", "")
 	if strings.Contains(result, "<title>default</title>") {
 		t.Fatalf("template title was retained: %s", result)
 	}
@@ -220,7 +198,11 @@ func TestInjectHeadContentReplacesTemplateTitle(t *testing.T) {
 		t.Fatalf("route title missing: %s", result)
 	}
 
-	withoutTitle := injectHeadContent(html, `<meta name="robots" content="index">`)
+	withoutTitle := page.renderDocument(
+		renderer.Result{HTML: "<main>x</main>", Head: `<meta name="robots" content="index">`},
+		"",
+		"",
+	)
 	if !strings.Contains(withoutTitle, "<title>default</title>") {
 		t.Fatalf("template title should remain when SSR head has no title: %s", withoutTitle)
 	}

@@ -293,6 +293,10 @@ runtime, err := gossr.New(gossr.Config{
 - dev 模式下，非 `/_ssr/data` 请求会被代理到 `DEV_SERVER_URL`。
 - 生产模式下，`NoRoute` 会执行 SSR：resolver -> 渲染 -> 注入 -> 返回 HTML。
 - `ssrRender({ url, snapshot })` 的 `url` 是完整 path + query，而不只是 path。
+- SSR bundle 必须无跨请求可变全局状态：goja runtime 会在请求间复用（无论渲染
+  成功或抛出异常），模块级缓存会泄漏到其他用户的请求中。gossr-vue 生成的
+  bundle 天然满足；宿主引入的第三方依赖需自行确认。建议像 subapi 一样用
+  "同一 runtime 渲染两次结果必须一致"的测试守住这条线。
 - 渲染失败或超时时，会返回 fallback 页面，并注入：
   - `meta[name="ssr-error-id"]`
   - 完整的 `__GOSSR_BOOT__` 文档数据（客户端可无 SSR 冷启动）
@@ -351,7 +355,8 @@ ginOptions.SSRFetchAuthorizer = func(req *http.Request) (int, bool) {
 - 默认每个 runtime 渲染 200 次后回收，限制前端 Promise、路由等第三方状态在长时间运行中的累积
 - gojs 会把 payload 复制为原生 JS 数据，脚本不能反向修改宿主 map/slice；非 JSON 数据会在渲染前返回错误
 - gojs 提供浏览器兼容的 `atob` / `btoa`，便于运行不依赖 Node `Buffer` 的自包含 SSR bundle
-- goja 脚本异常或 payload 转换失败后会丢弃当前 runtime，避免半变更状态进入下一请求
+- goja 渲染被中断（超时/取消）或 panic 后会丢弃当前 runtime；干净的脚本异常不丢弃，
+  避免稳定报错的页面把每次请求都变成完整的 bundle 重建
 
 ## 环境变量
 

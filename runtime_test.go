@@ -667,46 +667,41 @@ func TestStructuralSSRTemplateMutationIgnoresScriptText(t *testing.T) {
 		t.Fatalf("validateIndexTemplate: %v", err)
 	}
 
-	marked, err := markSSRApp(indexHTML)
+	page, err := compileIndexTemplate(indexHTML)
 	if err != nil {
-		t.Fatalf("markSSRApp: %v", err)
-	}
-	if !strings.Contains(marked, `<div class="shell" id='app' data-ssr="true">`) {
-		t.Fatalf("real app element was not marked: %s", marked)
-	}
-	if !strings.Contains(marked, `const appSelector = '[id="app"]'`) {
-		t.Fatalf("script text was changed: %s", marked)
+		t.Fatalf("compileIndexTemplate: %v", err)
 	}
 
-	rendered, err := replaceAppHTMLMarker(marked, `<main>SSR</main>`)
+	boot, err := bootScript(map[string]any{"ok": true})
 	if err != nil {
-		t.Fatalf("replaceAppHTMLMarker: %v", err)
+		t.Fatalf("bootScript: %v", err)
 	}
-	if !strings.Contains(rendered, `const marker = "<!--app-html-->"`) {
-		t.Fatalf("script marker was changed: %s", rendered)
+	document := page.renderDocument(renderer.Result{HTML: `<main>SSR</main>`}, boot, "")
+	if !strings.Contains(document, `<div class="shell" id='app' data-ssr="true"><main>SSR</main></div>`) {
+		t.Fatalf("structural marker was not replaced: %s", document)
 	}
-	if !strings.Contains(rendered, `<div class="shell" id='app' data-ssr="true"><main>SSR</main></div>`) {
-		t.Fatalf("structural marker was not replaced: %s", rendered)
+	if !strings.Contains(document, `const appSelector = '[id="app"]'`) {
+		t.Fatalf("script text was changed: %s", document)
+	}
+	if !strings.Contains(document, `const marker = "<!--app-html-->"`) {
+		t.Fatalf("script marker was changed: %s", document)
+	}
+	if !strings.Contains(document, `<script id="__GOSSR_BOOT__" type="application/json">{"ok":true}</script>`) {
+		t.Fatalf("document has no structural boot element: %s", document)
 	}
 
-	fallback := buildPageFallback(indexHTML, nil, "", "")
+	fallback := page.renderFallback(nil, "", "")
 	if !strings.Contains(fallback, `const marker = "<!--app-html-->"`) {
 		t.Fatalf("fallback changed script marker: %s", fallback)
 	}
 	if strings.Contains(fallback, `<div class="shell" id='app'><!--app-html--></div>`) {
 		t.Fatalf("fallback retained structural marker: %s", fallback)
 	}
-
-	injected, err := injectSSRBootData(rendered, map[string]any{"ok": true})
-	if err != nil {
-		t.Fatalf("injectSSRBootData: %v", err)
+	if strings.Contains(fallback, `data-ssr`) {
+		t.Fatalf("fallback must not mark the app element for hydration: %s", fallback)
 	}
-	hasBoot, err := documentHasElementID(injected, "__GOSSR_BOOT__")
-	if err != nil {
-		t.Fatalf("inspect injected document: %v", err)
-	}
-	if !hasBoot {
-		t.Fatal("injected document has no structural boot element")
+	if !strings.Contains(fallback, `<script id="__GOSSR_BOOT__" type="application/json">{}</script>`) {
+		t.Fatalf("fallback has no boot element: %s", fallback)
 	}
 }
 
@@ -730,12 +725,9 @@ func TestTypedRendererOutcomeCannotOverrideResolver(t *testing.T) {
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			status, redirect, err := mergeRenderOutcome(page, testCase.rendered)
+			err := validateRenderOutcome(page, testCase.rendered)
 			if (err != nil) != testCase.wantErr {
-				t.Fatalf("mergeRenderOutcome error=%v, wantErr=%v", err, testCase.wantErr)
-			}
-			if !testCase.wantErr && (status != page.Status || redirect != nil) {
-				t.Fatalf("status=%d redirect=%#v", status, redirect)
+				t.Fatalf("validateRenderOutcome error=%v, wantErr=%v", err, testCase.wantErr)
 			}
 		})
 	}

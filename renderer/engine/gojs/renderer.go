@@ -48,7 +48,6 @@ func (r *Renderer) Render(ctx context.Context, urlPath string, payload map[strin
 	}
 	container.uses++
 	rt := container.runtime
-	healthy := false
 
 	var interrupted atomic.Bool
 	stopWatch := func() {}
@@ -68,15 +67,33 @@ func (r *Renderer) Render(ctx context.Context, urlPath string, payload map[strin
 		}
 	}
 
+	panicked := true
 	defer func() {
 		// 必须先确认旧请求 watcher 已退出，才能让 runtime 被下一请求获取。
 		stopWatch()
-		if interrupted.Load() || !healthy {
+		// 中断会留下执行了一半的 JS，panic 后 goja 状态未知，两者都必须丢弃。
+		// 干净的 JS 异常不会污染 runtime；保留它避免每次失败渲染后都重新
+		// 执行整个 bundle。
+		if interrupted.Load() || panicked {
 			r.pool.Discard(container)
 			return
 		}
 		r.pool.Put(container)
 	}()
+
+	result, err := r.renderInContainer(ctx, container, urlPath, payload, &interrupted)
+	panicked = false
+	return result, err
+}
+
+func (r *Renderer) renderInContainer(
+	ctx context.Context,
+	container *runtimeContainer,
+	urlPath string,
+	payload map[string]any,
+	interrupted *atomic.Bool,
+) (renderer.Result, error) {
+	rt := container.runtime
 
 	if container.renderFunc == nil {
 		return renderer.Result{}, errors.New("ssrRender is not a function")
@@ -122,26 +139,19 @@ func (r *Renderer) Render(ctx context.Context, urlPath string, payload map[strin
 		return renderer.Result{}, formatGojaError(err)
 	}
 
-	var result renderer.Result
 	if container.structuredABI {
-		result, err = decodeStructuredResult(rt, resultVal)
-		if err != nil {
-			return renderer.Result{}, err
-		}
-	} else {
-		headVal := rt.Get("__SSR_HEAD__")
-		head := ""
-		if headVal != nil && !goja.IsNull(headVal) && !goja.IsUndefined(headVal) {
-			head = headVal.String()
-		}
-		result = renderer.Result{
-			HTML: resultVal.String(),
-			Head: head,
-		}
+		return decodeStructuredResult(rt, resultVal)
 	}
 
-	healthy = true
-	return result, nil
+	headVal := rt.Get("__SSR_HEAD__")
+	head := ""
+	if headVal != nil && !goja.IsNull(headVal) && !goja.IsUndefined(headVal) {
+		head = headVal.String()
+	}
+	return renderer.Result{
+		HTML: resultVal.String(),
+		Head: head,
+	}, nil
 }
 
 func renderPayloadValue(container *runtimeContainer, payload map[string]any) (goja.Value, error) {

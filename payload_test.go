@@ -22,7 +22,7 @@ func TestObjectPayloadMarshalsOnceAndDetachesSource(t *testing.T) {
 	source := countingPayloadMarshaler{
 		calls: &calls,
 		value: map[string]any{
-			"count": json.Number("9007199254740993"),
+			"count": json.Number("9007199254740991"),
 			"items": sourceItems,
 		},
 	}
@@ -37,7 +37,7 @@ func TestObjectPayloadMarshalsOnceAndDetachesSource(t *testing.T) {
 
 	sourceItems[0] = "changed"
 	object := payload.AsMap()
-	if got := object["count"]; got != json.Number("9007199254740993") {
+	if got := object["count"]; got != json.Number("9007199254740991") {
 		t.Fatalf("number=%#v, want preserved json.Number", got)
 	}
 	items, ok := object["items"].([]any)
@@ -69,6 +69,9 @@ func TestObjectPayloadRejectsNonObjectAndInvalidJSONValues(t *testing.T) {
 		{name: "cycle", value: cycle},
 		{name: "nan", value: map[string]any{"number": math.NaN()}},
 		{name: "positive infinity", value: map[string]any{"number": math.Inf(1)}},
+		{name: "unsafe integer", value: map[string]any{"id": json.Number("9007199254740993")}},
+		{name: "unsafe negative integer", value: map[string]any{"id": json.Number("-9007199254740993")}},
+		{name: "nested unsafe integer", value: map[string]any{"items": []any{map[string]any{"id": int64(1) << 60}}}},
 	}
 
 	for _, testCase := range tests {

@@ -66,19 +66,13 @@ var staticAssetExts = map[string]struct{}{
 
 func handlePageDocumentWithRenderTimeout(
 	c *gin.Context,
-	indexHTML string,
+	page *compiledTemplate,
 	ssr renderer.Renderer,
 	admission *pageAdmission,
 	resolver PageResolver,
-	excludedPrefixes []string,
 	configuredSiteOrigin string,
 	renderTimeout time.Duration,
 ) {
-	if !shouldHandleDocument(c.Request, excludedPrefixes) {
-		c.Status(http.StatusNotFound)
-		return
-	}
-
 	requestContext, release, err := admission.enter(c.Request.Context())
 	if err != nil {
 		setHTMLNoCacheHeaders(c)
@@ -122,52 +116,34 @@ func handlePageDocumentWithRenderTimeout(
 		targetRequestURI(pageRequest),
 		payload,
 		renderTimeout,
-		nil,
 	)
 	if renderErr != nil {
 		log.Printf("ssr render failed id=%s path=%q err=%q", reqID, c.Request.URL.Path, renderErr)
-		fallback := buildPageFallback(indexHTML, payload, locale, reqID)
-		writeHTMLDocument(c, resolved.Status, fallback)
+		writeHTMLDocument(c, resolved.Status, page.renderFallback(payload, locale, reqID))
 		return
 	}
 
-	status, redirect, err := mergeRenderOutcome(resolved, rendered)
-	if err != nil {
+	if err := validateRenderOutcome(resolved, rendered); err != nil {
 		log.Printf("invalid ssr render outcome id=%s path=%q err=%q", reqID, c.Request.URL.Path, err)
-		fallback := buildPageFallback(indexHTML, payload, locale, reqID)
-		writeHTMLDocument(c, http.StatusInternalServerError, fallback)
-		return
-	}
-	if redirect != nil {
-		writePageRedirect(c, *redirect)
+		writeHTMLDocument(c, http.StatusInternalServerError, page.renderFallback(payload, locale, reqID))
 		return
 	}
 
-	page, err := markSSRApp(indexHTML)
-	if err != nil {
-		log.Printf("mark SSR app failed id=%s path=%q err=%q", reqID, c.Request.URL.Path, err)
-		page = buildPageFallback(indexHTML, nil, locale, reqID)
-		writeHTMLDocument(c, http.StatusInternalServerError, page)
+	// The template was validated boot-free at startup; only rendered output can
+	// smuggle a competing boot element in. A substring check is deliberately
+	// conservative: a false positive merely downgrades to the CSR fallback.
+	if strings.Contains(rendered.HTML, bootElementID) || strings.Contains(rendered.Head, bootElementID) {
+		log.Printf("ssr render output contains %s id=%s path=%q", bootElementID, reqID, c.Request.URL.Path)
+		writeHTMLDocument(c, http.StatusInternalServerError, page.renderFallback(nil, locale, reqID))
 		return
 	}
-	page, err = replaceAppHTMLMarker(page, rendered.HTML)
-	if err != nil {
-		log.Printf("replace SSR app marker failed id=%s path=%q err=%q", reqID, c.Request.URL.Path, err)
-		page = buildPageFallback(indexHTML, nil, locale, reqID)
-		writeHTMLDocument(c, http.StatusInternalServerError, page)
-		return
-	}
-	if locale != "" {
-		page = applyHTMLLang(page, locale)
-	}
-	page = injectHeadContent(page, rendered.Head)
-	page, err = injectSSRBootData(page, payload)
+	boot, err := bootScript(payload)
 	if err != nil {
 		log.Printf("inject SSR boot data failed id=%s path=%q err=%q", reqID, c.Request.URL.Path, err)
-		page = buildPageFallback(indexHTML, nil, locale, reqID)
-		status = http.StatusInternalServerError
+		writeHTMLDocument(c, http.StatusInternalServerError, page.renderFallback(nil, locale, reqID))
+		return
 	}
-	writeHTMLDocument(c, status, page)
+	writeHTMLDocument(c, resolved.Status, page.renderDocument(rendered, boot, locale))
 }
 
 func resolvePage(ctx context.Context, resolver PageResolver, request PageRequest) (PageResult, map[string]any, error) {
@@ -185,18 +161,18 @@ func resolvePage(ctx context.Context, resolver PageResolver, request PageRequest
 	return result, payloadToMap(result.Payload), nil
 }
 
-func mergeRenderOutcome(page PageResult, rendered renderer.Result) (int, *Redirect, error) {
+func validateRenderOutcome(page PageResult, rendered renderer.Result) error {
 	if rendered.Redirect != nil {
-		return 0, nil, errors.New("typed renderer must not return a redirect")
+		return errors.New("typed renderer must not return a redirect")
 	}
 	if rendered.Status != 0 && rendered.Status != page.Status {
-		return 0, nil, fmt.Errorf(
+		return fmt.Errorf(
 			"renderer status %d conflicts with resolver status %d",
 			rendered.Status,
 			page.Status,
 		)
 	}
-	return page.Status, nil, nil
+	return nil
 }
 
 func setPageCacheHeaders(c *gin.Context, policy CachePolicy) {
@@ -230,59 +206,141 @@ func writeHTMLDocument(c *gin.Context, status int, page string) {
 	c.Data(status, "text/html; charset=utf-8", []byte(page))
 }
 
-func injectSSRBootData(page string, payload map[string]any) (string, error) {
+const bootElementID = "__GOSSR_BOOT__"
+
+// bootScript serializes the payload into the boot element consumed by
+// bootstrapClient. encoding/json escapes <, > and & by default, so the JSON
+// cannot break out of the script element.
+func bootScript(payload map[string]any) (string, error) {
 	if payload == nil {
 		payload = map[string]any{}
 	}
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
-		return page, err
+		return "", err
 	}
-
-	const bootID = "__GOSSR_BOOT__"
-	hasBootElement, err := documentHasElementID(page, bootID)
-	if err != nil {
-		return page, fmt.Errorf("inspect SSR document: %w", err)
-	}
-	if hasBootElement {
-		return page, fmt.Errorf("document already contains %s", bootID)
-	}
-	script := `<script id="` + bootID + `" type="application/json">` + string(jsonData) + `</script>`
-	withBoot, found, err := insertBeforeHTMLElementEnd(page, "head", script)
-	if err != nil {
-		return page, err
-	}
-	if found {
-		return withBoot, nil
-	}
-	withBoot, found, err = insertBeforeHTMLElementEnd(page, "body", script)
-	if err != nil {
-		return page, err
-	}
-	if found {
-		return withBoot, nil
-	}
-	return page + script, nil
+	return `<script id="` + bootElementID + `" type="application/json">` + string(jsonData) + `</script>`, nil
 }
 
-func buildPageFallback(indexHTML string, payload map[string]any, locale string, reqID string) string {
-	page, err := replaceAppHTMLMarker(indexHTML, "")
+// compiledTemplate is index.html pre-split at its two injection points — the
+// </head> insertion point and the app-html marker — so the request path only
+// concatenates strings instead of re-tokenizing the document.
+type compiledTemplate struct {
+	// preHead runs from the start of the document to just before </head>.
+	preHead string
+	// preHeadNoTitle is preHead with template <title> elements removed; used
+	// when the SSR head carries an authoritative <title>.
+	preHeadNoTitle string
+	// headToMarkerSSR runs from </head> up to the app marker with the app
+	// element marked data-ssr; headToMarkerCSR is the untouched fallback twin.
+	headToMarkerSSR string
+	headToMarkerCSR string
+	// postMarker runs from the end of the app marker to the end of the document.
+	postMarker string
+}
+
+func compileIndexTemplate(indexHTML string) (*compiledTemplate, error) {
+	if err := validateIndexTemplate(indexHTML); err != nil {
+		return nil, err
+	}
+
+	ssrDoc, err := markSSRApp(indexHTML)
 	if err != nil {
-		page = indexHTML
+		return nil, err
+	}
+	strippedDoc, err := removeHTMLElementsWithin(ssrDoc, "title", "head")
+	if err != nil {
+		return nil, err
+	}
+
+	preHead, headToMarkerSSR, postMarker, err := splitTemplateDocument(ssrDoc)
+	if err != nil {
+		return nil, err
+	}
+	preHeadNoTitle, _, _, err := splitTemplateDocument(strippedDoc)
+	if err != nil {
+		return nil, err
+	}
+	_, headToMarkerCSR, _, err := splitTemplateDocument(indexHTML)
+	if err != nil {
+		return nil, err
+	}
+
+	return &compiledTemplate{
+		preHead:         preHead,
+		preHeadNoTitle:  preHeadNoTitle,
+		headToMarkerSSR: headToMarkerSSR,
+		headToMarkerCSR: headToMarkerCSR,
+		postMarker:      postMarker,
+	}, nil
+}
+
+func splitTemplateDocument(document string) (string, string, string, error) {
+	headEnd, found, err := findHTMLElementEnd(document, "head")
+	if err != nil {
+		return "", "", "", err
+	}
+	if !found {
+		return "", "", "", errors.New("template must contain a closed head element")
+	}
+	markerStart, markerEnd, err := findAppHTMLMarker(document)
+	if err != nil {
+		return "", "", "", err
+	}
+	if headEnd > markerStart {
+		return "", "", "", errors.New("template head must close before the app-html marker")
+	}
+	return document[:headEnd], document[headEnd:markerStart], document[markerEnd:], nil
+}
+
+// renderDocument assembles the SSR document: template head, rendered head,
+// boot data, then the rendered app HTML in place of the marker.
+func (t *compiledTemplate) renderDocument(rendered renderer.Result, boot string, locale string) string {
+	pre := t.preHead
+	head := rendered.Head
+	if strings.TrimSpace(head) == "" {
+		head = ""
+	} else {
+		// SSR head 中的 title 对当前路由具有权威性，模板默认 title 必须移除，
+		// 否则浏览器和搜索引擎通常会采用第一个旧标题。
+		if hasTitle, err := documentHasHTMLElement(head, "title"); err == nil && hasTitle {
+			pre = t.preHeadNoTitle
+		}
+		if !strings.HasSuffix(head, "\n") {
+			head += "\n"
+		}
 	}
 	if locale != "" {
-		page = applyHTMLLang(page, locale)
+		pre = applyHTMLLang(pre, locale)
 	}
+
+	var page strings.Builder
+	page.Grow(len(pre) + len(head) + len(boot) + len(t.headToMarkerSSR) + len(rendered.HTML) + len(t.postMarker))
+	page.WriteString(pre)
+	page.WriteString(head)
+	page.WriteString(boot)
+	page.WriteString(t.headToMarkerSSR)
+	page.WriteString(rendered.HTML)
+	page.WriteString(t.postMarker)
+	return page.String()
+}
+
+// renderFallback assembles the CSR fallback shell: no SSR markup, no data-ssr
+// attribute, boot data preserved so the client can still boot from the payload.
+func (t *compiledTemplate) renderFallback(payload map[string]any, locale string, reqID string) string {
+	pre := t.preHead
+	if locale != "" {
+		pre = applyHTMLLang(pre, locale)
+	}
+	meta := ""
 	if strings.TrimSpace(reqID) != "" {
-		page = injectHeadContent(
-			page,
-			fmt.Sprintf(`<meta name="ssr-error-id" content="%s">`, template.HTMLEscapeString(reqID)),
-		)
+		meta = fmt.Sprintf(`<meta name="ssr-error-id" content="%s">`, template.HTMLEscapeString(reqID))
 	}
-	if injected, err := injectSSRBootData(page, payload); err == nil {
-		return injected
+	boot, err := bootScript(payload)
+	if err != nil {
+		boot = ""
 	}
-	return page
+	return pre + meta + boot + t.headToMarkerCSR + t.postMarker
 }
 
 func isSSRDataPath(rawPath string) bool {
@@ -319,34 +377,6 @@ func applyHTMLLang(html string, locale string) string {
 	}
 
 	return html
-}
-
-func injectHeadContent(html string, head string) string {
-	if strings.TrimSpace(head) == "" {
-		return html
-	}
-	// SSR head 中的 title 对当前路由具有权威性，模板默认 title 必须移除，
-	// 否则浏览器和搜索引擎通常会采用第一个旧标题。
-	if hasTitle, err := documentHasHTMLElement(head, "title"); err == nil && hasTitle {
-		if withoutTitles, removeErr := removeHTMLElementsWithin(
-			html,
-			"title",
-			"head",
-		); removeErr == nil {
-			html = withoutTitles
-		}
-	}
-
-	injection := head
-	if !strings.HasSuffix(injection, "\n") {
-		injection += "\n"
-	}
-
-	if injected, found, err := insertBeforeHTMLElementEnd(html, "head", injection); err == nil && found {
-		return injected
-	}
-
-	return injection + html
 }
 
 func payloadToMap(payload SSRPayload) map[string]any {
@@ -576,7 +606,7 @@ func buildDevProxy(rawURL string) (*httputil.ReverseProxy, error) {
 	return proxy, nil
 }
 
-func renderWithTimeout(parentCtx context.Context, ssr renderer.Renderer, urlPath string, payload map[string]any, timeout time.Duration, sem chan struct{}) (result renderer.Result, err error) {
+func renderWithTimeout(parentCtx context.Context, ssr renderer.Renderer, urlPath string, payload map[string]any, timeout time.Duration) (result renderer.Result, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			result = renderer.Result{}
@@ -603,18 +633,6 @@ func renderWithTimeout(parentCtx context.Context, ssr renderer.Renderer, urlPath
 
 	ctx, cancel := context.WithTimeout(parentCtx, timeout)
 	defer cancel()
-
-	if sem != nil {
-		select {
-		case sem <- struct{}{}:
-			defer func() { <-sem }()
-		case <-ctx.Done():
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return renderer.Result{}, fmt.Errorf("render timeout after %s", timeout)
-			}
-			return renderer.Result{}, ctx.Err()
-		}
-	}
 
 	result, err = ssr.Render(ctx, urlPath, payload)
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {

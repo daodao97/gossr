@@ -32,9 +32,6 @@ func (a *pageAdmission) enter(parent context.Context) (context.Context, func(), 
 	if parent == nil {
 		parent = context.Background()
 	}
-	if a == nil {
-		a = newPageAdmission(0, defaultPageRequestTimeout)
-	}
 
 	ctx, cancel := context.WithTimeout(parent, a.timeout)
 	if a.slots == nil {

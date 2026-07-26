@@ -91,7 +91,7 @@ type Runtime struct {
 	mode            Mode
 	frontendDist    fs.FS
 	assetsFS        fs.FS
-	indexHTML       string
+	page            *compiledTemplate
 	renderer        renderer.Renderer
 	proxy           *httputil.ReverseProxy
 	siteOrigin      string
@@ -177,8 +177,8 @@ func newRuntime(config Config, compatibilityUnlimited bool) (_ *Runtime, err err
 	if err != nil {
 		return nil, fmt.Errorf("failed to read index.html: %w", err)
 	}
-	instance.indexHTML = string(indexBytes)
-	if err := validateIndexTemplate(instance.indexHTML); err != nil {
+	instance.page, err = compileIndexTemplate(string(indexBytes))
+	if err != nil {
 		return nil, fmt.Errorf("invalid index.html: %w", err)
 	}
 
@@ -363,11 +363,10 @@ func (r *Runtime) productionNoRoute(
 
 		handlePageDocumentWithRenderTimeout(
 			c,
-			r.indexHTML,
+			r.page,
 			r.renderer,
 			r.admission,
 			resolver,
-			excludedPrefixes,
 			r.siteOrigin,
 			r.renderTimeout,
 		)
@@ -796,7 +795,7 @@ func validateIndexTemplate(indexHTML string) error {
 	return nil
 }
 
-func replaceAppHTMLMarker(document, replacement string) (string, error) {
+func findAppHTMLMarker(document string) (int, int, error) {
 	tokenizer := nethtml.NewTokenizer(strings.NewReader(document))
 	offset := 0
 	markerStart := -1
@@ -812,16 +811,16 @@ func replaceAppHTMLMarker(document, replacement string) (string, error) {
 		switch tokenType {
 		case nethtml.ErrorToken:
 			if err := tokenizer.Err(); err != nil && !errors.Is(err, io.EOF) {
-				return document, fmt.Errorf("parse HTML document: %w", err)
+				return 0, 0, fmt.Errorf("parse HTML document: %w", err)
 			}
 			if markerCount != 1 {
-				return document, fmt.Errorf(
+				return 0, 0, fmt.Errorf(
 					"expected exactly one structural %s marker, found %d",
 					appHTMLMarker,
 					markerCount,
 				)
 			}
-			return document[:markerStart] + replacement + document[markerEnd:], nil
+			return markerStart, markerEnd, nil
 
 		case nethtml.CommentToken:
 			if string(raw) != appHTMLMarker {
@@ -841,11 +840,7 @@ type htmlByteRange struct {
 	end   int
 }
 
-func insertBeforeHTMLElementEnd(
-	document string,
-	elementName string,
-	insertion string,
-) (string, bool, error) {
+func findHTMLElementEnd(document string, elementName string) (int, bool, error) {
 	tokenizer := nethtml.NewTokenizer(strings.NewReader(document))
 	offset := 0
 	for {
@@ -857,14 +852,14 @@ func insertBeforeHTMLElementEnd(
 		switch tokenType {
 		case nethtml.ErrorToken:
 			if err := tokenizer.Err(); err != nil && !errors.Is(err, io.EOF) {
-				return document, false, fmt.Errorf("parse HTML document: %w", err)
+				return 0, false, fmt.Errorf("parse HTML document: %w", err)
 			}
-			return document, false, nil
+			return 0, false, nil
 
 		case nethtml.EndTagToken:
 			name, _ := tokenizer.TagName()
 			if strings.EqualFold(string(name), elementName) {
-				return document[:tokenStart] + insertion + document[tokenStart:], true, nil
+				return tokenStart, true, nil
 			}
 		}
 	}
@@ -1064,26 +1059,6 @@ func markSSRApp(indexHTML string) (string, error) {
 			return indexHTML[:insertion] +
 				` data-ssr="true"` +
 				indexHTML[insertion:], nil
-		}
-	}
-}
-
-func documentHasElementID(document, targetID string) (bool, error) {
-	tokenizer := nethtml.NewTokenizer(strings.NewReader(document))
-	for {
-		switch tokenizer.Next() {
-		case nethtml.ErrorToken:
-			if err := tokenizer.Err(); err != nil && !errors.Is(err, io.EOF) {
-				return false, err
-			}
-			return false, nil
-		case nethtml.StartTagToken, nethtml.SelfClosingTagToken:
-			for _, attribute := range tokenizer.Token().Attr {
-				if strings.EqualFold(attribute.Key, "id") &&
-					attribute.Val == targetID {
-					return true, nil
-				}
-			}
 		}
 	}
 }

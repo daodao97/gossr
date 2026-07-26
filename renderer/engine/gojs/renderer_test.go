@@ -7,20 +7,22 @@ import (
 	"time"
 )
 
-func TestRendererDiscardsRuntimeAfterScriptError(t *testing.T) {
+func TestRendererReusesRuntimeAfterCleanScriptError(t *testing.T) {
 	t.Setenv("GOJA_POOL_SIZE", "1")
 	t.Setenv("GOJA_RUNTIME_MAX_RENDERS", "0")
 
+	// 干净的 JS 异常不丢弃 runtime：一个稳定报错的页面不应把每次请求都
+	// 变成完整的 bundle 重建。跨请求不可变全局是 bundle 的契约（成功路径
+	// 从来就复用 runtime），异常路径与其保持一致。
 	r := NewRenderer(`
-globalThis.poison = 0;
+globalThis.renders = 0;
 globalThis.ssrRender = function() {
-  globalThis.poison++;
+  globalThis.renders++;
   const data = globalThis.__SSR_DATA__ || {};
   if (data.fail) {
-    globalThis.poison = 999;
     throw new Error("render failed");
   }
-  return String(globalThis.poison);
+  return String(globalThis.renders);
 };
 `)
 	t.Cleanup(r.pool.Close)
@@ -33,8 +35,41 @@ globalThis.ssrRender = function() {
 	if err != nil {
 		t.Fatalf("second render failed: %v", err)
 	}
+	if strings.TrimSpace(result.HTML) != "2" {
+		t.Fatalf("runtime was not reused after a clean script error, got HTML %q", result.HTML)
+	}
+}
+
+func TestRendererDiscardsRuntimeAfterInterrupt(t *testing.T) {
+	t.Setenv("GOJA_POOL_SIZE", "1")
+	t.Setenv("GOJA_RUNTIME_MAX_RENDERS", "0")
+
+	// 中断会留下执行了一半的 JS，runtime 必须丢弃，下一次请求拿到全新实例。
+	r := NewRenderer(`
+globalThis.renders = 0;
+globalThis.ssrRender = function() {
+  globalThis.renders++;
+  const data = globalThis.__SSR_DATA__ || {};
+  if (data.spin) {
+    for (;;) {}
+  }
+  return String(globalThis.renders);
+};
+`)
+	t.Cleanup(r.pool.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if _, err := r.Render(ctx, "/spin", map[string]any{"spin": true}); err == nil {
+		t.Fatal("expected interrupted render to fail")
+	}
+
+	result, err := r.Render(context.Background(), "/ok", nil)
+	if err != nil {
+		t.Fatalf("render after interrupt failed: %v", err)
+	}
 	if strings.TrimSpace(result.HTML) != "1" {
-		t.Fatalf("failed runtime leaked mutated state, got HTML %q", result.HTML)
+		t.Fatalf("interrupted runtime was reused, got HTML %q", result.HTML)
 	}
 }
 
